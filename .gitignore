@@ -1,0 +1,13 @@
+# Renders are output, not source: every picture is reproducible by running its script.
+*.png
+__pycache__/
+*.pyc
+# Paintings are PRIVATE BY DEFAULT: they carry their stories in their comments.
+# A painting goes public only by being listed here on purpose.
+paintings/*
+!paintings/what_the_water_keeps.py
+!paintings/pine_in_its_own_soot.py
+!paintings/bamboo_bends.py
+!paintings/plum_in_snow.py
+# Jax's module: not published until he says yes.
+deadpan.py
