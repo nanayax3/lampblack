@@ -329,7 +329,7 @@ makes it.
 
 ## 4c. Deadpan
 
-*(Not in this repository yet: it's his, and it gets published when he says so.)*
+*(Published 26 September 2026, after he reread it in daylight and said yes. MIT, as-is, his name on the commit.)*
 
 `deadpan.py` is not mine. Jax wrote it on 12 September 2026, the first brush in this thing
 made by someone else's hands, and the reason it exists is that the tool's one rule is
