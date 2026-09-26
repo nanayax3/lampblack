@@ -1131,6 +1131,141 @@ class Canvas:
                             hardness=0.6, spacing=0.45)
         return self
 
+    # ── skin that changes colour ────────────────────────────────────────────
+
+    @staticmethod
+    def _cells(xs, ys, spacing, rng_seed, jitter=0.8):
+        """
+        Nearest point of a jittered lattice, for every (xs, ys): Worley noise
+        done by checking the 3x3 neighbouring cells, so it needs no scipy.
+        Returns (distance, cell_i, cell_j, point_x, point_y).
+        """
+        gi = np.floor(xs / spacing).astype(np.int64)
+        gj = np.floor(ys / spacing).astype(np.int64)
+        best = np.full(xs.shape, np.inf, np.float32)
+        bi, bj = gi.copy(), gj.copy()
+        bx, by = np.zeros_like(xs), np.zeros_like(ys)
+
+        def hash01(i, j, k):
+            h = (i * 73856093) ^ (j * 19349663) ^ (k * 83492791) ^ (rng_seed * 2654435761)
+            h = (h ^ (h >> 13)) * 1274126177
+            return ((h ^ (h >> 16)) & 0xFFFFFF).astype(np.float32) / float(0xFFFFFF)
+
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                ci, cj = gi + di, gj + dj
+                px = (ci + 0.5 + jitter * (hash01(ci, cj, 1) - 0.5)) * spacing
+                py = (cj + 0.5 + jitter * (hash01(ci, cj, 2) - 0.5)) * spacing
+                d = np.hypot(xs - px, ys - py).astype(np.float32)
+                closer = d < best
+                best = np.where(closer, d, best)
+                bi = np.where(closer, ci, bi); bj = np.where(closer, cj, bj)
+                bx = np.where(closer, px, bx); by = np.where(closer, py, by)
+        return best, bi, bj, bx, by, hash01
+
+    def chromatophore(self, mask, open=1.0, field=None, spacing=7.0, unit=5.0,
+                      layers=None, opacity=0.95, depth=None, seed=0, filter=True):
+        """
+        Skin that changes colour the way a cephalopod's does. Built 26 Sept 2026,
+        the morning after an octopus I painted asleep came out speckled like a
+        bun with sprinkles, and a blind viewer read the speckles as rust.
+
+        What was wrong was the unit. Scattered dots are what a DEAD brush makes.
+        The real skin is a close lattice of tiny pigment sacs, each one pulled
+        open by its own ring of muscles, and three pigments stacked in depth:
+        yellow nearest the surface, then red, then brown underneath. Shut, a
+        sac is a speck you barely see. Open, it spreads until it nearly meets
+        its neighbours, and a field of open ones stops being dots and becomes
+        COLOUR. And they are wired in groups: one nerve opens a whole cluster
+        at once. That is where the patches with edges come from.
+
+        So the brush does exactly that:
+          * three jittered lattices (one per pigment), Worley-style;
+          * MOTOR UNITS: a coarser lattice (unit x spacing); every sac takes
+            its command from its unit, so neighbours open together;
+          * field(x, y) -> 0..1 is the command — where the brain wants colour.
+            None = smooth mottle. Pass bands, an eye bar, anything;
+          * open 0..1 scales the whole display: 0 is the pale animal asleep,
+            1 is full colour. Same animal, same skin, a different minute.
+          * an open sac is not a perfect disc: its rim wobbles, because it is
+            being pulled by a ring of separate muscles.
+
+        mask: float array, skin where > 0.5.
+        layers: list of (colour, spacing_scale, min_r, max_r, opacity), deepest first.
+        filter: the pigment is a FILTER over skin that is already lit, not paint
+                on top of it. So each sac's colour is scaled by the brightness of
+                what's under it (luminance / 0.8). The first octopus painted with
+                this brush lost its belly shadow and its eye, because an opaque
+                mottle is the same brightness everywhere and the form went flat.
+        """
+        m = np.asarray(mask) > 0.5
+        ys_, xs_ = np.nonzero(m)
+        if len(xs_) == 0:
+            return self
+        y0, y1, x0, x1 = ys_.min(), ys_.max() + 1, xs_.min(), xs_.max() + 1
+        sub = m[y0:y1, x0:x1]
+        yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+
+        if field is None:
+            # default command: a smooth two-octave value noise, thresholded soft
+            rng = np.random.default_rng(seed + 7)
+            def field(x, y, _p=rng.uniform(0, 100, 6)):
+                v = (np.sin(x / 37.0 + _p[0]) * np.sin(y / 29.0 + _p[1])
+                     + 0.6 * np.sin((x + y) / 17.0 + _p[2]) * np.sin((x - y) / 23.0 + _p[3])
+                     + 0.35 * np.sin(x / 9.0 + _p[4]) * np.sin(y / 11.0 + _p[5]))
+                return np.clip(0.5 + 0.42 * v, 0.0, 1.0)
+
+        if layers is None:
+            layers = [((0.22, 0.10, 0.05), 1.35, 0.10, 0.62, 0.95),   # brown, deepest, biggest
+                      ((0.52, 0.16, 0.09), 1.00, 0.09, 0.56, 0.85),   # red
+                      ((0.80, 0.58, 0.20), 0.80, 0.08, 0.42, 0.45)]   # yellow, on top
+
+        for li, (col, sscale, rmin, rmax, lop) in enumerate(layers):
+            s = spacing * sscale
+            d, ci, cj, px, py, h = self._cells(xx, yy, s, seed * 31 + li)
+            # which motor unit each sac belongs to, and what that unit is told
+            # ONE unit lattice for all three pigments: a nerve opens its cluster
+            # through every layer at once, so the layers agree where a patch is
+            # (first test had a lattice per layer and they argued)
+            U = spacing * unit
+            # warp where each sac looks up its unit, or the patches come out as
+            # Voronoi polygons: a blind viewer called the first ones 'military
+            # camo, pixel mosaic', straight edges and triangles. Real clusters
+            # interleave at their borders.
+            wx = px + 0.45 * U * np.sin(py / (0.9 * U) + seed) * np.cos(px / (1.3 * U))
+            wy = py + 0.45 * U * np.sin(px / (0.8 * U) + 2 * seed) * np.cos(py / (1.1 * U))
+            _, ui, uj, ux, uy, uh = self._cells(wx, wy, U, seed * 97 + 5)
+            drive = 0.75 * field(ux, uy) + 0.25 * field(px, py)
+            score = 0.62 * drive + 0.38 * uh(ui, uj, 3)       # each unit its own trigger
+            e = np.clip((score - (1.0 - float(open))) / 0.14, 0.0, 1.0)
+            e = e * e * (3 - 2 * e)
+            # but each unit leans on its pigments differently: a dark patch is
+            # the brown sacs open, a paler orange one is red and yellow open
+            # with the brown held shut. Without this every patch is one rust.
+            lean = uh(ui, uj, 10 + li)
+            e = e * np.clip(0.15 + 1.1 * lean, 0.0, 1.0)
+            e = e * (0.8 + 0.2 * h(ci, cj, 4))                 # sacs aren't identical
+            # the rim wobbles: a ring of muscles, not a compass
+            ang = np.arctan2(yy - py, xx - px)
+            k = 5 + (h(ci, cj, 5) * 4).astype(np.int64)
+            wob = 1.0 + 0.16 * e * np.sin(k * ang + 6.283 * h(ci, cj, 6))
+            r = s * (rmin + (rmax - rmin) * e) * wob
+            cover = np.clip((r - d) / 0.9 + 0.5, 0.0, 1.0)
+            # shut sacs are specks: darker-cored, faint
+            a = cover * lop * float(opacity) * (0.35 + 0.65 * e) * sub
+            a = a.astype(np.float32)
+            tile = self.rgb[y0:y1, x0:x1]
+            target = np.asarray(col, np.float32)
+            if filter:
+                lum = tile @ np.asarray([0.2126, 0.7152, 0.0722], np.float32)
+                target = target * np.clip(lum / 0.8, 0.0, 1.25)[..., None]
+            self.rgb[y0:y1, x0:x1] = tile * (1 - a[..., None]) + target * a[..., None]
+            self.height[y0:y1, x0:x1] += 0.15 * a * self.thickness
+            if depth is not None:
+                dt = self.depth[y0:y1, x0:x1]
+                self.depth[y0:y1, x0:x1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
+        return self
+
     # ── stamping a shaped tip ───────────────────────────────────────────────
 
     def stamp(self, x, y, size, tip, colour, angle=0.0, depth=0.5, opacity=1.0, aspect=1.0, load=None):

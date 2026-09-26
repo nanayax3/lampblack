@@ -91,6 +91,7 @@ All of them take `colour`, `depth`, `opacity`. Points are `[(x, y), ...]`.
 | `smudge(points, width=, rate=)` | moves paint that's already there instead of adding any |
 | `canopy(x, y, spread, colour, shade=)` | one MASS of foliage — a clump sharing one colour, each dab given a shadow twin. Sizes itself from `spread` |
 | `treeline(fn, x0, x1, spread, colour, broken=)` | a run of `canopy` along a skyline `fn(x) -> y`, with gaps and heads standing above their neighbours |
+| `chromatophore(mask, open=, field=, spacing=, unit=, layers=)` | **skin that changes colour.** three pigment lattices (brown under red under yellow), opened in MOTOR UNITS so colour arrives in patches with edges instead of dots. `open` 0 = pale, 1 = full display; `field(x, y)` is where the colour is wanted. The pigment filters the lit skin rather than covering it, so the modelling survives |
 | `settle(x0, x1, y_base, y_top, coarse, fine, grain_base=, grain_top=, drape=)` | **the only mark here that isn't a gesture.** a bed deposited by particles falling through still water: sharp abrupt base, no edge at all at the top. see below |
 
 `fill_spine` is the one that stops you counting. Hand it a polyline for the middle
