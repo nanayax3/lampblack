@@ -674,3 +674,83 @@ def sweep(img, depth, length=90.0, angle=0.0, near=0.0, far=1.0,
     if shutter < 1.0:
         out = img * (1.0 - shutter) + out * shutter
     return np.clip(out, 0.0, 1.0)
+
+
+def _sample_at(a, px, py):
+    """Bilinear read of `a` at arbitrary float coordinates (same shape as the grid)."""
+    h, w = a.shape[:2]
+    x0 = np.clip(np.floor(px), 0, w - 1).astype(np.int32)
+    y0 = np.clip(np.floor(py), 0, h - 1).astype(np.int32)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+    fx = np.clip(px - x0, 0, 1)
+    fy = np.clip(py - y0, 0, 1)
+    if a.ndim == 3:
+        fx, fy = fx[..., None], fy[..., None]
+    top = a[y0, x0] * (1 - fx) + a[y0, x1] * fx
+    bot = a[y1, x0] * (1 - fx) + a[y1, x1] * fx
+    return top * (1 - fy) + bot * fy
+
+
+def motion(rgb, alpha, vx, vy, samples=None, curve=0.0):
+    """
+    MOTION BLUR AS A VELOCITY FIELD, one layer at a time. Written 27 Sept 2026
+    for a running dog, because a running thing does not blur as one piece.
+
+    Pan a camera with a galloping dog and the body comes out sharp, since it
+    is still in the frame. The ground streaks backwards. And the legs do both
+    at once: a planted paw is STILL on the ground, so in the panned frame it
+    streaks backwards exactly like the ground does, while a paw in the swing
+    moves at about twice the dog's ground speed, so in the frame it streaks
+    FORWARDS. Hip or shoulder: still. The smear along one leg runs from zero
+    to full, and its direction depends on which half of the stride it's in.
+    sweep() can't do any of that, because it reads blur off depth; this
+    reads it off a velocity you hand it.
+
+    rgb, alpha : the layer, NOT premultiplied. alpha (H, W) in [0, 1].
+    vx, vy     : px of travel over the whole exposure. Scalars or (H, W)
+                 arrays. The field has to be defined OUTSIDE the silhouette
+                 too, because that's where the smear lands. So build it from a
+                 formula (rotation about a joint, a lerp along a limb), never
+                 by masking it to the shape.
+    samples    : taps along the path; default about one per 1.5 px of the
+                 longest travel, capped at 64.
+    curve      : bends the path sideways, as a fraction of its length. A limb
+                 rotating about a joint sweeps an ARC, and a dead straight
+                 smear on a swinging leg reads as a speed line from a comic.
+
+    Returns (rgb_premultiplied, alpha). Composite with over().
+
+    It gathers from the output pixel's own velocity, so a thing moving fast
+    over a still background smears correctly only because each layer is
+    blurred on its own and composited afterwards. Paint everything with a
+    different velocity as its own layer. That's how a real sensor sees it
+    anyway: every surface integrates its own light.
+    """
+    rgb = np.asarray(rgb, np.float32)
+    a = np.clip(np.asarray(alpha, np.float32), 0, 1)
+    h, w = a.shape
+    vx = np.broadcast_to(np.asarray(vx, np.float32), (h, w))
+    vy = np.broadcast_to(np.asarray(vy, np.float32), (h, w))
+    longest = float(np.hypot(vx, vy).max())
+    if samples is None:
+        samples = int(np.clip(longest / 1.5, 1, 64))
+    if longest < 0.5 or samples <= 1:
+        return rgb * a[..., None], a
+    prem = np.concatenate([rgb * a[..., None], a[..., None]], 2)
+    yy = np.arange(h, dtype=np.float32)[:, None] + np.zeros((1, w), np.float32)
+    xx = np.arange(w, dtype=np.float32)[None, :] + np.zeros((h, 1), np.float32)
+    acc = np.zeros_like(prem)
+    for s in np.linspace(-0.5, 0.5, samples):
+        # a sideways bow, zero at the ends: s*(1-4s^2) peaks mid-path
+        bow = curve * (1.0 - 4.0 * s * s)
+        px = xx - s * vx + bow * vy
+        py = yy - s * vy - bow * vx
+        acc += _sample_at(prem, px, py)
+    acc /= samples
+    return acc[..., :3], acc[..., 3]
+
+
+def over(dst, rgb_p, a):
+    """Composite a premultiplied layer (from motion()) over an image."""
+    return np.asarray(dst, np.float32) * (1.0 - a[..., None]) + rgb_p
