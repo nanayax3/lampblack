@@ -192,6 +192,83 @@ class Canvas:
         self.height[y0:y1, x0:x1] += a * self.thickness
         return self
 
+    def crumb(self, x, y, size, lit, shade, light=(-0.7, -0.7), verts=None, depth=0.5,
+              opacity=1.0, seed=0, facet_jitter=0.12, squash=0.85, angle=None):
+        """
+        One broken chunk of something packed: snow, earth, bread, plaster.
+        A hard-edged irregular polygon, shaded FLAT PER FACET, so the light
+        lands on one or two faces in steps instead of rolling round a form.
+
+        WHY IT EXISTS (28 Sept 2026, a dog's paw throwing snow). I built every
+        clump as a dark dab with a lighter dab offset toward the light. Six
+        renders later a blind look said beads, soap bubbles, popcorn,
+        marshmallows, and it was right: a soft round mark plus an offset
+        highlight is exactly how you paint a BALL. The gradient is the lie. A
+        broken thing has corners and planes, and the light tells you so by
+        jumping between them.
+
+        The polygon is star-shaped round its centre (vertices at sorted
+        angles, jittered radii, the odd notch), so each pixel's facet is just
+        the fan sector its angle falls in. The facet's shade comes from its
+        outer edge's normal against `light` (a 2D direction TOWARD the light,
+        in image coords), plus a little per-facet jitter so no two chunks
+        share a lighting formula. Edges are antialiased over a pixel, not
+        feathered: a crumb is not soft.
+        """
+        r = np.random.default_rng(seed)
+        n = int(verts) if verts else int(r.integers(5, 9))
+        R = max(0.8, float(size))
+        base = r.uniform(0, 2 * np.pi) if angle is None else float(angle)
+        # near-even angles: a gap over 180 degrees would flip the inside test
+        # and fill the whole tile (first test: rectangles)
+        th = base + (np.arange(n) + r.uniform(-0.32, 0.32, n)) * (2 * np.pi / n)
+        rad = R * r.uniform(0.72, 1.0, n)          # wider than this and it's a shard of paper
+        notch = r.random(n) < 0.15
+        rad = np.where(notch, rad * 0.78, rad)
+        vx = x + rad * np.cos(th)
+        vy = y + rad * np.sin(th) * float(squash)
+        reach = int(np.ceil(R)) + 2
+        y0, y1 = max(0, int(y) - reach), min(self.h, int(y) + reach + 1)
+        x0, x1 = max(0, int(x) - reach), min(self.w, int(x) + reach + 1)
+        if y1 <= y0 or x1 <= x0:
+            return self
+        py = np.arange(y0, y1, dtype=np.float32)[:, None] + 0.0 * np.arange(x0, x1)[None, :]
+        px = np.arange(x0, x1, dtype=np.float32)[None, :] + 0.0 * py
+        ang = np.mod(np.arctan2((py - y) / float(squash), px - x) - th[0], 2 * np.pi)
+        rel = np.mod(th - th[0], 2 * np.pi)
+        sector = np.clip(np.searchsorted(rel, ang, side="right") - 1, 0, n - 1)
+        ax, ay = vx[sector], vy[sector]
+        bx, by = vx[(sector + 1) % n], vy[(sector + 1) % n]
+        ex, ey = bx - ax, by - ay
+        el = np.sqrt(ex * ex + ey * ey) + 1e-6
+        # signed distance to the sector's outer edge, positive inside
+        dist = ((px - ax) * ey - (py - ay) * ex) / el
+        cside = ((x - ax) * ey - (y - ay) * ex) / el
+        dist = dist * np.sign(np.where(cside == 0, 1.0, cside))
+        a = np.clip(dist + 0.5, 0.0, 1.0).astype(np.float32) * float(opacity)
+        a[a < 0.004] = 0.0
+        if not a.any():
+            return self
+        # per facet: outward normal of its edge against the light
+        L = np.asarray(light, np.float32)
+        L = L / (np.linalg.norm(L) + 1e-6)
+        exs, eys = np.roll(vx, -1) - vx, np.roll(vy, -1) - vy
+        nx, ny = eys, -exs
+        mx, my = (vx + np.roll(vx, -1)) / 2 - x, (vy + np.roll(vy, -1)) / 2 - y
+        flip = np.sign(nx * mx + ny * my)
+        nl = np.sqrt(nx * nx + ny * ny) + 1e-6
+        nx, ny = nx / nl * flip, ny / nl * flip
+        k = np.clip(0.5 + 0.5 * (nx * L[0] + ny * L[1]), 0, 1) ** 1.4
+        k = np.clip(k + r.normal(0, facet_jitter, n), 0, 1)
+        kk = k[sector][..., None]
+        col = np.asarray(shade, np.float32) * (1 - kk) + np.asarray(lit, np.float32) * kk
+        tile = self.rgb[y0:y1, x0:x1]
+        self.rgb[y0:y1, x0:x1] = tile * (1.0 - a[..., None]) + col * a[..., None]
+        dt = self.depth[y0:y1, x0:x1]
+        self.depth[y0:y1, x0:x1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
+        self.height[y0:y1, x0:x1] += a * self.thickness
+        return self
+
     def mist(self, x, y, radius, colour, depth=0.5, strength=1.0, hardness=0.25):
         """
         A soft mark that ADDS instead of covering. The additive sibling of

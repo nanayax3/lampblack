@@ -86,6 +86,7 @@ All of them take `colour`, `depth`, `opacity`. Points are `[(x, y), ...]`.
 | `scatter(points, colour, spread=, density=)` | spray |
 | `mist(x, y, radius, colour, strength=)` | **the other blend mode.** a soft mark that ADDS instead of covering — dust, spray, breath, any suspension |
 | `mist_along(points, colour, width=, strength=)` | `mist` tiled along a polyline; width, colour and strength may each be callables of `t` |
+| `crumb(x, y, size, lit, shade, light=)` | one broken chunk (snow, earth, plaster): a hard-edged irregular polygon shaded **flat per facet**. A dark dab with a lighter one offset on top is the recipe for a *ball*; this is the fix |
 | `stamp(x, y, size, tip, colour, angle=, aspect=)` | one shaped tip |
 | `stamp_along(points, tip, colour, width=)` | **the other good one** — stamps a tip along a path, rotating it to follow the direction of travel |
 | `smudge(points, width=, rate=)` | moves paint that's already there instead of adding any |
