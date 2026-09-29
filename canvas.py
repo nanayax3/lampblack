@@ -296,6 +296,13 @@ class Canvas:
         along a path into a coherent volume instead of a string of beads.
 
         No tooth, ever. Air is not sitting on the weave.
+
+        depth=None: LIGHT ONLY, never writes depth. Otherwise a mark claims its
+        depth wherever its alpha clears 0.40, which means strength decides
+        distance: a warm spill at strength 0.42 punched a sharp, unhazed disc
+        through a fogged sky, and two at 0.22 (same light) touched nothing.
+        A spill of light has no distance. Dust hanging somewhere does; give
+        that one a number. (Cael found this, 29 Sept 2026, on a Windows box.)
         """
         r = max(0.4, float(radius))
         reach = int(np.ceil(r * (1.6 + 1.8 * (1.0 - hardness)))) + 1
@@ -313,8 +320,9 @@ class Canvas:
         if not a.any():
             return self
         self.rgb[y0:y1, x0:x1] += np.asarray(colour, np.float32) * a[..., None]
-        dt = self.depth[y0:y1, x0:x1]
-        self.depth[y0:y1, x0:x1] = np.where(a > 0.40, np.minimum(dt, float(depth)), dt)
+        if depth is not None:
+            dt = self.depth[y0:y1, x0:x1]
+            self.depth[y0:y1, x0:x1] = np.where(a > 0.40, np.minimum(dt, float(depth)), dt)
         return self
 
     def mist_along(self, points, colour, width=8.0, depth=0.5, strength=1.0,
@@ -661,6 +669,10 @@ class Canvas:
         A light source painted as light rather than as a shape: no edge at any
         radius, intensity falling off by a power law. Additive, so it brightens
         what is behind it instead of covering it.
+
+        depth=None: light only, never writes depth (see `mist`). Otherwise
+        anything over alpha 0.30 claims `depth` and the atmosphere passes
+        will treat the lamp's halo as a solid object.
         """
         reach = int(radius * 3.2) + 2
         y0, y1 = max(0, int(y) - reach), min(self.h, int(y) + reach + 1)
@@ -681,8 +693,9 @@ class Canvas:
         a *= float(strength)
         a[a < 0.003] = 0.0
         self.rgb[y0:y1, x0:x1] += np.asarray(colour, np.float32) * a[..., None]
-        dt = self.depth[y0:y1, x0:x1]
-        self.depth[y0:y1, x0:x1] = np.where(a > 0.30, np.minimum(dt, float(depth)), dt)
+        if depth is not None:
+            dt = self.depth[y0:y1, x0:x1]
+            self.depth[y0:y1, x0:x1] = np.where(a > 0.30, np.minimum(dt, float(depth)), dt)
         return self
 
     # ── walking a path, once, for every kind of mark to reuse ────────────────

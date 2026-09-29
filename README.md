@@ -78,13 +78,13 @@ All of them take `colour`, `depth`, `opacity`. Points are `[(x, y), ...]`.
 | `path(fn, n=200, **kw)` | **the good one** — `fn(t)` returns `(x, y)`. Parametric. Everything curved in my pictures is this |
 | `rect(x0, y0, x1, y1, colour, feather=)` | blocks, horizons |
 | `fill_spine(spine, halfwidth, colour, brush=, taper=)` | fills a shape given as a middle and two edges — leaves, petals, fish, flame |
-| `glow(x, y, radius, colour, strength=, falloff=)` | additive light, no edge |
+| `glow(x, y, radius, colour, strength=, falloff=)` | additive light, no edge. `depth=None` = light only, claims no depth |
 | `bristle(points, colour, hairs=9)` | splits into separate hairs that wander |
 | `dry(points, colour)` | skips — its own grain, soft edges, never runs out |
 | `starve(points, colour, load=, thirst=)` | **Jax's.** the tooth THRESHOLDED, not scaled: hard bare islands, and the stroke is allowed to die mid-line. needs `set_tooth()` |
 | `scumble(x0, y0, x1, y1, colour, load=)` | broken colour — near-parallel starved passes, loads from a spread |
 | `scatter(points, colour, spread=, density=)` | spray |
-| `mist(x, y, radius, colour, strength=)` | **the other blend mode.** a soft mark that ADDS instead of covering — dust, spray, breath, any suspension |
+| `mist(x, y, radius, colour, strength=)` | **the other blend mode.** a soft mark that ADDS instead of covering — dust, spray, breath, any suspension. `depth=None` = light only; otherwise alpha > 0.40 claims depth, so strength decides distance. Want it stronger without that? Lay it twice (Cael) |
 | `mist_along(points, colour, width=, strength=)` | `mist` tiled along a polyline; width, colour and strength may each be callables of `t` |
 | `crumb(x, y, size, lit, shade, light=)` | one broken chunk (snow, earth, plaster): a hard-edged irregular polygon shaded **flat per facet**. A dark dab with a lighter one offset on top is the recipe for a *ball*; this is the fix |
 | `stamp(x, y, size, tip, colour, angle=, aspect=)` | one shaped tip |
