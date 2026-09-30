@@ -12,6 +12,7 @@ nothing is destructive — the original file is never touched.
 Pure NumPy and Pillow. No engine, no service, no GPU.
 """
 
+import os
 import sys
 import warnings
 
@@ -39,8 +40,42 @@ def save(img, path):
             stacklevel=2,
         )
     a = np.clip(img, 0.0, 1.0)
-    Image.fromarray((a * 255.0 + 0.5).astype(np.uint8)).save(path)
+    im = Image.fromarray((a * 255.0 + 0.5).astype(np.uint8))
+    im.save(path)
+    _keep_for_the_day(im)
     return path
+
+
+# Every save also drops a copy into a folder for the day, named by the clock and
+# nothing else, so look() can see ALL of the day's renders, not just the one
+# you're proud of, under names that don't say what anything was meant to be.
+# Set LAMPBLACK_DAYBOOK="" to turn it off.
+DAYBOOK = os.environ.get("LAMPBLACK_DAYBOOK",
+                         os.path.expanduser("~/.cache/lampblack/day"))
+DAYBOOK_DAYS = 14
+
+
+def _keep_for_the_day(im):
+    if not DAYBOOK:
+        return
+    try:
+        import time
+        day = os.path.join(DAYBOOK, time.strftime("%Y-%m-%d"))
+        os.makedirs(day, exist_ok=True)
+        stamp = time.strftime("%H%M%S")
+        n = 0
+        while os.path.exists(os.path.join(day, f"{stamp}-{n}.png")):
+            n += 1
+        im.save(os.path.join(day, f"{stamp}-{n}.png"))
+        # forget old days
+        cutoff = time.time() - DAYBOOK_DAYS * 86400
+        for d in os.listdir(DAYBOOK):
+            p = os.path.join(DAYBOOK, d)
+            if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+    except OSError:
+        pass  # the daybook is a convenience; a save never fails because of it
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -527,6 +562,9 @@ def blind(img_or_path, out="/tmp/blind.png"):
 
     The question is fixed on purpose. Don't edit it per painting; if a picture
     needs a leading question to pass, it hasn't passed.
+
+    Prefer look(), which also takes the choice of picture and the call to the
+    looker out of your hands. This is the by-hand version.
     """
     import shutil
     if isinstance(img_or_path, str):
@@ -536,6 +574,62 @@ def blind(img_or_path, out="/tmp/blind.png"):
     prompt = f"Read the image at {out}. {BLIND_QUESTION}"
     print(prompt)
     return prompt
+
+
+# The looker: a headless Claude Code with nothing but the Read tool, started in
+# an empty folder so no project notes, hooks or memory come with it. Override
+# with LAMPBLACK_LOOKER (a command that takes the prompt as its last argument
+# and runs in the folder of pictures) if you use something else.
+LOOKER = os.environ.get(
+    "LAMPBLACK_LOOKER",
+    "claude -p --restricted --strict-mcp-config --tools Read --no-session-persistence",
+)
+
+
+def look(day=None, timeout=300):
+    """
+    The blind check with the author's hands out of it. blind() froze the
+    question and the filename; this freezes the other two doors:
+
+      - THE CROP. You don't choose what gets looked at. Every render save()
+        wrote today goes in (see DAYBOOK), oldest first, outtakes and all.
+      - THE SPAWN. You don't write the call. This starts the looker itself
+        with the frozen question and nothing else, so there is no line above
+        it where "it's a floodplain, by the way" could go.
+
+    `day` is "YYYY-MM-DD" to look at an earlier day; default is today.
+    What's left that you control: whether you call it at all, and what you
+    make of the answer. The answer is printed and returned verbatim.
+    """
+    import glob, shlex, shutil, subprocess, tempfile, time
+    if not DAYBOOK:
+        raise RuntimeError("look() needs the daybook; LAMPBLACK_DAYBOOK is off.")
+    day = day or time.strftime("%Y-%m-%d")
+    renders = sorted(glob.glob(os.path.join(DAYBOOK, day, "*.png")))
+    if not renders:
+        print(f"look(): no renders saved on {day}.")
+        return ""
+    room = tempfile.mkdtemp(prefix="look-")
+    for i, src in enumerate(renders, 1):
+        shutil.copyfile(src, os.path.join(room, f"{i}.png"))
+    n = len(renders)
+    prompt = (
+        f"There are {n} picture{'s' if n > 1 else ''} in the current folder, "
+        f"1.png to {n}.png, in the order they were made. Read each one. "
+        f"For each, separately: {BLIND_QUESTION}"
+    )
+    try:
+        r = subprocess.run(shlex.split(LOOKER) + [prompt], cwd=room,
+                           capture_output=True, text=True, timeout=timeout)
+        seen = r.stdout.strip() or r.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        seen = ""
+        print(f"look(): the looker didn't answer ({e}). Fallback, by hand:")
+        print(f"  pictures in {room}\n  {prompt}")
+        return ""
+    shutil.rmtree(room, ignore_errors=True)
+    print(f"── look(): {n} render(s) from {day}, seen by a stranger ──\n{seen}")
+    return seen
 
 def report(img, name="", show=True):
     """

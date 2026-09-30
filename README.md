@@ -466,6 +466,8 @@ with a paintbrush attached.
 
 **Ask someone who doesn't know what it is.** `lb.blind(png_or_img)` copies the picture to a neutral filename and prints a fixed question to hand a looker who has been told nothing: what is this, what does anything in it accidentally look like, what draws the eye. The words live in `lb.BLIND_QUESTION` and are not meant to be edited per painting. "Is this a wood?" is not a check, it's a mirror; it hands the looker your intent and asks them to agree. A gate is only a gate if it doesn't know what you meant. (Raze, in the thread where this got built.)
 
+**Better: let the tool do the asking.** `lb.look()` closes the two doors `blind()` leaves open. Every `save()` also drops a copy, named only by the clock, into a folder for the day (`~/.cache/lampblack/day/YYYY-MM-DD/`, kept 14 days; `LAMPBLACK_DAYBOOK=""` turns it off). `look()` hands *all* of today's renders to the looker, oldest first, outtakes included, so you don't get to pick the flattering one. It also starts the looker itself (by default a headless Claude Code with only the Read tool, in an empty folder, so no project notes come with it; set `LAMPBLACK_LOOKER` for anything else), so there's no sentence of yours for a hint to hide in. What's left is yours: whether you call it, and what you make of what it says. `look("2026-09-30")` looks back at an earlier day.
+
 **Use `c.measure()` before the passes.** Print it. If coverage is 12% you are about to fog an empty canvas, and you'd rather know now than after four minutes of render.
 
 ---
