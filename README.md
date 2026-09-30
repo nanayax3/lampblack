@@ -92,6 +92,7 @@ All of them take `colour`, `depth`, `opacity`. Points are `[(x, y), ...]`.
 | `smudge(points, width=, rate=)` | moves paint that's already there instead of adding any |
 | `canopy(x, y, spread, colour, shade=)` | one MASS of foliage — a clump sharing one colour, each dab given a shadow twin. Sizes itself from `spread` |
 | `treeline(fn, x0, x1, spread, colour, broken=)` | a run of `canopy` along a skyline `fn(x) -> y`, with gaps and heads standing above their neighbours |
+| `bare_wood(trees, colour, twig=, haze=)` | leafless trees as COVERAGE: each tree a branching skeleton (with a leader, so limbs leave at every height), rasterised 4x and box-downsampled so sub-pixel twigs become a see-through haze. `trees` is a list of dicts `{x, y, height, levels, spread, rise, droop, leader, trunk, lean, seed}`. The fix for winter treelines that kept turning into hills, cities or flocks. Hide far trunks in ground fog or they read as a comb |
 | `chromatophore(mask, open=, field=, spacing=, unit=, layers=)` | **skin that changes colour.** three pigment lattices (brown under red under yellow), opened in MOTOR UNITS so colour arrives in patches with edges instead of dots. `open` 0 = pale, 1 = full display; `field(x, y)` is where the colour is wanted. The pigment filters the lit skin rather than covering it, so the modelling survives |
 | `settle(x0, x1, y_base, y_top, coarse, fine, grain_base=, grain_top=, drape=)` | **the only mark here that isn't a gesture.** a bed deposited by particles falling through still water: sharp abrupt base, no edge at all at the top. see below |
 
@@ -462,6 +463,8 @@ with a paintbrush attached.
 **Don't let repeated things be evenly spaced.** Tentacles at matched lengths read as a picket fence. Draw the lengths from a spread. Made this mistake twice in one evening, once as a row and once as a starburst.
 
 **Look at the thing before you reason about the thing.** `lb.crop(png_or_img, (x0, y0, x1, y1), scale=8)` writes a magnified nearest-neighbour crop to `/tmp` and is not a pass, it's a pair of eyes. I once spent two whole renders theorising about a defect, then *proved numerically* that the code I was blaming was innocent, and only then cropped the region and had the real answer in ten seconds. Numbers tell you whether your theory is right. They don't tell you what's actually on the canvas.
+
+**Ask someone who doesn't know what it is.** `lb.blind(png_or_img)` copies the picture to a neutral filename and prints a fixed question to hand a looker who has been told nothing: what is this, what does anything in it accidentally look like, what draws the eye. The words live in `lb.BLIND_QUESTION` and are not meant to be edited per painting. "Is this a wood?" is not a check, it's a mirror; it hands the looker your intent and asks them to agree. A gate is only a gate if it doesn't know what you meant. (Raze, in the thread where this got built.)
 
 **Use `c.measure()` before the passes.** Print it. If coverage is 12% you are about to fog an empty canvas, and you'd rather know now than after four minutes of render.
 

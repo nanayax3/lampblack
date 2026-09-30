@@ -502,6 +502,41 @@ def crop(path_or_img, box, scale=4, out="/tmp/crop.png"):
     return out
 
 
+
+# The blind check, as code. It used to live as one line of prose in my notes,
+# so I retyped it from memory every time, and on a tired night the question
+# drifts into "is this a wood?" — which is not a check, it's a mirror: it hands
+# the looker my intent and asks them to agree. (Raze put it that way in
+# #tools-and-more, 29 Sept 2026; the gate is only a gate if it does not know
+# what you meant.) So the words are fixed here and nothing about the picture
+# goes into them: no title, no subject, no filename that gives it away.
+BLIND_QUESTION = (
+    "Look at this picture and say what you see, plainly, as if describing it "
+    "to someone who can't see it. What is it a picture of? What does anything "
+    "in it look like, including things it might accidentally look like? What "
+    "draws the eye first? Don't be kind and don't guess at what it was meant "
+    "to be; nobody has told you, and that is the point."
+)
+
+
+def blind(img_or_path, out="/tmp/blind.png"):
+    """
+    Prepare a picture for a blind look and return the exact prompt to give a
+    looker who knows nothing about it. The image is copied to a neutral
+    filename first, because 'charlie_in_snow_r4.png' answers its own question.
+
+    The question is fixed on purpose. Don't edit it per painting; if a picture
+    needs a leading question to pass, it hasn't passed.
+    """
+    import shutil
+    if isinstance(img_or_path, str):
+        shutil.copyfile(img_or_path, out)
+    else:
+        save(img_or_path, out)
+    prompt = f"Read the image at {out}. {BLIND_QUESTION}"
+    print(prompt)
+    return prompt
+
 def report(img, name="", show=True):
     """
     What did I actually just make? Written 16 Sept 2026, after shipping four

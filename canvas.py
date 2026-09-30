@@ -1540,6 +1540,132 @@ class Canvas:
         return self
 
 
+    # ── bare trees ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _branches(x, y, height, rng, levels=7, spread=40.0, rise=0.30,
+                  droop=0.0, lean=0.0, trunk=0.30, width=None, fork=(2, 3),
+                  leader=0.55):
+        """
+        The skeleton of one bare tree as a list of (x0, y0, x1, y1, w, gen).
+        Pure geometry, no paint, so a crown can be drawn at any scale.
+
+        LEADER. The first version forked every branch into equal children, and
+        every tree came out a vase: all the crown at the top of a bare stalk,
+        an acacia or a lollipop. A temperate tree has apical dominance: one
+        child carries on nearly straight (the leader), the others leave it
+        sideways, shorter and thinner, so there are limbs at every height.
+        `leader` is the chance a node keeps one (0 = elm-like vase, 1 = conifer
+        spine). Laterals alternate sides.
+
+        `rise` bends laterals back toward vertical (oak and lime low, poplar
+        high). `droop` pulls the last two generations down (birch). `trunk` is
+        the clear bole below the first limb, as a fraction of height.
+        """
+        segs = []
+        w0 = float(width if width is not None else max(0.8, height * 0.030))
+        bole = height * trunk
+        r = 0.86
+        L1 = (height - bole) / sum(r ** k for k in range(levels))
+        stack = [(float(x), float(y), -90.0 + lean, bole, w0, 0, 1)]
+        while stack:
+            bx, by, ang, ln, w, g, side = stack.pop()
+            px, py, a = bx, by, ang
+            for k in range(3):
+                a += rng.normal(0.0, 5.0 + 3.0 * g)
+                if g >= levels - 2 and droop:
+                    a += droop * (1.0 if np.cos(np.radians(a)) >= 0 else -1.0)
+                qx = px + np.cos(np.radians(a)) * ln / 3.0
+                qy = py + np.sin(np.radians(a)) * ln / 3.0
+                segs.append((px, py, qx, qy, w * (1.0 - 0.10 * k), g))
+                px, py = qx, qy
+            if g >= levels:
+                continue
+            base = L1 if g == 0 else ln
+            n = int(rng.integers(fork[0], fork[1] + 1))
+            if g >= levels - 2:
+                # the twig SPRAY: the last orders fork more, and that density,
+                # not any one twig, is what the eye reads as a winter crown
+                n += int(rng.integers(1, 3))
+            has_leader = rng.random() < leader
+            for i in range(n):
+                if has_leader and i == 0:
+                    ca = a + rng.normal(0.0, 8.0)
+                    ca += ((-90.0) - ca) * 0.25
+                    stack.append((px, py, ca, base * rng.uniform(0.82, 0.92),
+                                  w * rng.uniform(0.74, 0.82), g + 1, side))
+                    continue
+                side = -side
+                off = side * spread * rng.uniform(0.8, 1.5)
+                ca = a + off
+                ca = ca + ((-90.0) - ca) * rise * rng.uniform(0.4, 1.1)
+                k = 0.88 if has_leader else 1.0
+                stack.append((px, py, ca, base * rng.uniform(0.66, 0.88) * k,
+                              w * rng.uniform(0.50, 0.66), g + 1, side))
+        return segs
+
+    def bare_wood(self, trees, colour, twig=None, depth=0.5, opacity=1.0,
+                  haze=0.0, ss=4, fine=3):
+        """
+        Leafless trees, drawn as COVERAGE, not as paint. Written 30 Sept 2026
+        after a winter treeline failed three ways in one night ('The Powder
+        Still Goes Up'): a big crest read as hills, thin spikes as a city,
+        thresholded noise above the crest as a flock of birds.
+
+        What a bare wood actually is, at distance: thousands of twigs each far
+        thinner than a pixel. You never see one. You see how much of each
+        pixel they block — a warm, see-through haze that is densest where
+        crowns overlap and lacy at the rim, with the trunks and main limbs as
+        the only real lines in it. So this rasterises every branch at `ss`x
+        resolution with its true width (sub-pixel twigs as faint 1-px lines
+        scaled by their width) and box-downsamples. The haze is not a soft
+        brush pretending; it falls out of the geometry.
+
+        `trees` is a list of dicts: {x, y, height, ...} where anything else is
+        passed to _branches (levels, spread, rise, droop, lean, trunk, seed).
+        Generations >= levels - `fine` take the `twig` colour (the purplish
+        twig haze of birch and alder), the rest take `colour`.
+        `haze` blurs the coverage in canvas pixels, for trees far enough off
+        that even the limbs have gone.
+
+        All trees go into ONE mask, so where crowns overlap the coverage is
+        their union, not a double layer of paint.
+        """
+        from PIL import Image, ImageDraw, ImageFilter
+        twig = colour if twig is None else twig
+        S = int(ss)
+        limb = Image.new("L", (self.w * S, self.h * S), 0)
+        fin = Image.new("L", (self.w * S, self.h * S), 0)
+        dl, df = ImageDraw.Draw(limb), ImageDraw.Draw(fin)
+        for i, t in enumerate(trees):
+            t = dict(t)
+            rng = np.random.default_rng(t.pop("seed", i * 7919 + 11))
+            levels = t.get("levels", 7)
+            segs = self._branches(t.pop("x"), t.pop("y"), t.pop("height"), rng, **t)
+            for x0, y0, x1, y1, w, g in segs:
+                ws = w * S
+                if ws >= 1.0:
+                    lw, val = int(round(ws)), 255
+                else:
+                    lw, val = 1, int(255 * ws)
+                d = df if g >= levels - fine else dl
+                d.line([(x0 * S, y0 * S), (x1 * S, y1 * S)], fill=val, width=lw)
+                if lw >= 3:  # round the joint, or thick limbs notch at every bend
+                    h = lw / 2.0
+                    d.ellipse([x0 * S - h, y0 * S - h, x0 * S + h, y0 * S + h], fill=val)
+        out = []
+        for m in (limb, fin):
+            if haze > 0:
+                m = m.filter(ImageFilter.GaussianBlur(haze * S))
+            m = m.resize((self.w, self.h), Image.BOX)
+            out.append(np.asarray(m, np.float32) / 255.0)
+        for a, col in ((out[1], twig), (out[0], colour)):
+            a = np.clip(a * float(opacity), 0.0, 1.0)
+            self.rgb = self.rgb * (1.0 - a[..., None]) + np.asarray(col, np.float32) * a[..., None]
+            self.depth = np.where(a > 0.35, np.minimum(self.depth, float(depth)), self.depth)
+        self.ops.append(("bare_wood", len(trees)))
+        return self
+
 
 # ── tips ─────────────────────────────────────────────────────────────────────
 # Every brush on a sheet like that is the same idea: a shaped tip, stamped
