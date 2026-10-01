@@ -13,8 +13,8 @@ What makes it look like itself, and what this module does:
 
   * ONE BLACK, SEVERAL COLOURS. "Sumi ni gosai ari" — ink has five colours.
     Dense, it is black. Diluted, what shows is the particle size: soot made
-    at uneven temperatures has mixed particle sizes, and the small ones tint
-    the wash. Blue-black (ao-zumi) or brown-black (cha-boku) depending on
+    at uneven temperatures has mixed particle sizes, and the sizes tint
+    the wash (which way round took a second reading: see below). Blue-black (ao-zumi) or brown-black (cha-boku) depending on
     the stick. So each stroke here carries TWO populations — fine and
     coarse — and they are rendered with different absorption per channel.
   * THE HALO IS A DIFFERENT COLOUR FROM THE CORE. Fine particles ride the
@@ -30,6 +30,24 @@ Sources I read: Wikipedia 'Inkstick'; pigment.tokyo on koboku and on sumi
 colours. Honest note: sources disagree on WHICH soot is which colour —
 one says lamp-oil soot is the finer particle, retail lore often calls pine
 soot the blue one. I made it a parameter rather than pretend to know.
+
+Resolved 1 Oct 2026: they don't disagree, they were both right, and the
+first bullet above has the physics backwards. Carbon black REVERSES its
+undertone between mass tone and a thin film. Dense, fine particles look
+blue-black and coarse look brown; in a wash or a white blend it flips —
+coarse particles transmit a blue shade, fine ones a red-brown (Orion
+Engineered Carbons, TI 1459, sec. 4.1). Pine soot is the coarse one
+(aggregates ~3x the size of lampblack's), so pine ink goes blue in a wash
+(seiboku); oil soot is fine, so oil ink goes brown when diluted (Musashino
+Art University glossary, 'Inksticks'). Same reason wood smoke looks blue
+against dark trees and brown against the sky.
+
+So render(stick=...) does it physically: hue belongs to particle SIZE, the
+stick sets how big its particles are, and the mobile fine fraction is
+always the warmer one — a halo a shade warmer than its core, for free.
+render(kind=...) is kept as it was (hue on the fine fraction, a
+stylisation) because the paintings already made with it should still
+come out as themselves.
 """
 
 import numpy as np
@@ -37,8 +55,19 @@ import lampblack as lb
 
 # per-channel absorption (R, G, B). Higher = that channel is eaten harder.
 COARSE = np.array([2.45, 2.40, 2.30], np.float32)       # near-neutral, faintly warm black
-AO     = np.array([2.60, 1.95, 1.35], np.float32)       # fine particles, blue-black
-CHA    = np.array([1.35, 1.80, 2.45], np.float32)       # fine particles, brown-black
+AO     = np.array([2.60, 1.95, 1.35], np.float32)       # kind="ao": blue-black, carried on the fine fraction
+CHA    = np.array([1.35, 1.80, 2.45], np.float32)       # kind="cha": brown-black, same (a stylisation; see stick=)
+
+# render(stick=...): (coarse, fine) absorption per stick. In a thin film the
+# bigger particle transmits blue and the smaller one red-brown, and a pine
+# stick's whole distribution sits larger than an oil stick's.
+STICKS = {
+    "pine": (np.array([2.70, 2.30, 1.85], np.float32),  # big pine aggregates: blue
+             np.array([2.42, 2.38, 2.30], np.float32)), # pine's fine end: near neutral
+    "oil":  (np.array([2.36, 2.40, 2.46], np.float32),  # oil's coarse end: faintly warm
+             np.array([1.95, 2.30, 2.70], np.float32)), # true lampblack fines: brown
+}
+NEUTRAL = np.float32(2.40)
 
 # The only colours allowed near ink (24 Sept 2026, for the plum). Each is
 # (absorption per channel, mobility in water). The two classic reds for plum
@@ -204,14 +233,23 @@ class Sheet:
 
     # ── what you see ────────────────────────────────────────────────────────
 
-    def render(self, kind="ao", age=0.0):
+    def render(self, kind="ao", age=0.0, stick=None):
         """kind: 'ao' blue-black or 'cha' brown-black. age 0..1: koboku —
-        old glue lets the ink sink into the paper; the gradations widen."""
-        tint = AO if kind == "ao" else CHA
+        old glue lets the ink sink into the paper; the gradations widen.
+        stick: 'pine' or 'oil' colours both populations by particle size
+        instead (see the module note) and overrides kind."""
         g = 1.0 - 0.35 * age          # older ink: dilute tones go further before they go black
         f = np.clip(self.fine, 0, None)[..., None] ** g
         co = np.clip(self.coarse, 0, None)[..., None]
-        A = f * tint + co * COARSE
+        if stick is not None:
+            # the hue is a thin-film effect: where the ink is dense the
+            # film stops transmitting and the stroke goes plain black
+            tc, tf = STICKS[stick]
+            thin = np.exp(-(f + co) / 1.0)
+            A = (f * (NEUTRAL + thin * (tf - NEUTRAL))
+                 + co * (NEUTRAL + thin * (tc - NEUTRAL)))
+        else:
+            A = f * (AO if kind == "ao" else CHA) + co * COARSE
         for name, t in self.tints.items():
             A = A + np.clip(t, 0, None)[..., None] * TINTS[name][0]
         T = np.exp(-A * 1.25)
