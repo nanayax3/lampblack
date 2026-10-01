@@ -1666,6 +1666,213 @@ class Canvas:
         self.ops.append(("bare_wood", len(trees)))
         return self
 
+    def pollard(self, x, y, height, girth, bark, rod, rod_tip=None, years=3,
+                lean=0.0, light=-1.0, rods=140, hollow=None, head=1.7,
+                depth=0.3, seed=0, ss=4):
+        """
+        A pollarded tree: a short fat bole, a swollen HEAD of callus knuckles
+        where it has been cut back to the same place for decades, and a
+        fountain of straight unbranched rods out of the knuckles. Written
+        1 Oct 2026 for the pollard willows of a river meadow.
+
+        Why it is not bare_wood(): nothing about it is a branching tree. The
+        cut resets the crown, so every rod is the same age and starts from the
+        same few lumps. They are long, nearly straight, barely forked (one-year
+        rods not at all), and they splay outward as they lengthen because their
+        own weight bends them. A _branches() skeleton with a short trunk reads
+        as a shrub on a post.
+
+        `height` is the bole to the top of the head, `girth` its width at the
+        foot. `years` since the last cut sets the rod length; 0 is freshly cut:
+        stubs and pale cut faces on the knuckles, which is the most foreign
+        silhouette a tree can have (a fist). `light` is -1 for sun from the
+        left, +1 from the right. `hollow` = (t, size) puts a dark split in the
+        bole, t from foot (0) to head (1): pollards rot open young because the
+        cut lets fungi into the heartwood, which is the whole reason owls live
+        in them.
+
+        The bole is shaded across its width per pixel (a cylinder, lit on one
+        flank), with vertical furrows; the rods are coverage like bare_wood.
+        """
+        from PIL import Image, ImageDraw
+        rng = np.random.default_rng(seed)
+        rod_tip = rod if rod_tip is None else rod_tip
+        lean_r = np.radians(lean)
+        # the spine, foot to head, with a slight bow
+        n = 64
+        t = np.linspace(0.0, 1.0, n)
+        bow = rng.normal(0, 0.05) * girth
+        cx = x + np.sin(lean_r) * height * t + bow * np.sin(np.pi * t)
+        cy = y - height * t
+        # half-width: a flare at the foot, a slight waist, widening into the head
+        hw = 0.5 * girth * (1.0 + 0.45 * np.exp(-t / 0.06) - 0.10 * np.sin(np.pi * t)
+                            + 0.25 * np.clip((t - 0.6) / 0.4, 0, 1) ** 2)
+        hw *= 1.0 + 0.07 * np.sin(t * rng.uniform(9, 14) + rng.uniform(0, 6))
+        hw *= 1.0 + 0.05 * np.sin(t * rng.uniform(23, 31) + rng.uniform(0, 6))
+        # the HEAD: a lumpy club wider than the bole, centred a little below the top
+        R = 0.5 * girth * head
+        hcx, hcy = float(cx[-1]) + rng.normal(0, 0.06) * girth, float(cy[-1]) + 0.35 * R
+        top = (hcx, hcy - 0.55 * R)
+        # raster the bole outline at ss
+        S = int(ss)
+        x0 = int(max(0, np.floor(min((cx - hw).min(), hcx - 2 * R))))
+        x1 = int(min(self.w, np.ceil(max((cx + hw).max(), hcx + 2 * R))))
+        y0 = int(max(0, np.floor(hcy - 2 * R)))
+        y1 = int(min(self.h, np.ceil(y + girth * 0.3)))
+        if x1 <= x0 or y1 <= y0:
+            return self
+        bw, bh = x1 - x0, y1 - y0
+        m = Image.new("L", (bw * S, bh * S), 0)
+        dm = ImageDraw.Draw(m)
+        poly = [((cx[i] - hw[i] - x0) * S, (cy[i] - y0) * S) for i in range(n)]
+        poly += [((cx[i] + hw[i] - x0) * S, (cy[i] - y0) * S) for i in range(n - 1, -1, -1)]
+        dm.polygon(poly, fill=255)
+        # head outline: an ellipse whose radius wanders, so it is a club, not a ball
+        th = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+        rr = R * (1 + 0.06 * np.sin(3 * th + rng.uniform(0, 6)) + 0.05 * np.sin(5 * th + rng.uniform(0, 6))
+                  + rng.normal(0, 0.03, th.size))
+        dm.polygon([((hcx + np.cos(a_) * r_ - x0) * S, (hcy + np.sin(a_) * r_ * 0.62 - y0) * S)
+                    for a_, r_ in zip(th, rr)], fill=255)
+        # knuckles: the cut points, lumps crowded along the top rim of the head
+        knuckles = []
+        kn = int(rng.integers(6, 10))
+        for k in range(kn):
+            a_ = np.radians(-90 + (k / (kn - 1) - 0.5) * 115 + rng.normal(0, 8))
+            kx = hcx + np.cos(a_) * R * rng.uniform(0.5, 0.8)
+            ky = hcy + np.sin(a_) * R * 0.62 * rng.uniform(0.7, 1.0)
+            ks = R * rng.uniform(0.22, 0.36)
+            knuckles.append((kx, ky, ks))
+            dm.ellipse([(kx - ks - x0) * S, (ky - ks * 0.8 - y0) * S,
+                        (kx + ks - x0) * S, (ky + ks * 0.8 - y0) * S], fill=255)
+        a = np.asarray(m.resize((bw, bh), Image.BOX), np.float32) / 255.0
+        # shading: position across the bole at each row -> cylinder normal
+        yy = np.arange(y0, y1, dtype=np.float32)
+        order = np.argsort(cy)
+        ccx = np.interp(yy, cy[order], cx[order])
+        chw = np.interp(yy, cy[order], hw[order])
+        chw = np.maximum(chw, 1.0)
+        xs = np.arange(x0, x1, dtype=np.float32)[None, :]
+        u = np.clip((xs - ccx[:, None]) / (chw[:, None] * 1.05), -1, 1)
+        # in the head the knuckles are their own little domes
+        kd = np.zeros_like(u)
+        for kx, ky, ks in knuckles:
+            dx = (xs - kx) / ks
+            dy = (yy[:, None] - ky) / (ks * 0.85)
+            inside = dx * dx + dy * dy < 1
+            kd = np.where(inside, np.clip(dx, -1, 1), kd)
+        hu = np.clip((xs - hcx) / (R * 1.05), -1, 1)
+        hv = (yy[:, None] - hcy) / (R * 0.62)
+        inhead = (hu * hu + hv * hv < 1.1) & (yy[:, None] < hcy + R * 0.2)
+        u = np.where(inhead, hu, u)
+        u = np.where(kd != 0, 0.3 * u + 0.7 * kd, u)
+        nz = np.sqrt(np.clip(1 - u * u, 0, 1))
+        lit = np.clip(u * light * 0.95 + nz * 0.35, 0, 1)
+        shade = 0.28 + 0.95 * lit ** 1.3
+        # furrows: vertical ridges that follow the spine, wobbling, coarser low down
+        fr = np.sin((xs - ccx[:, None]) / (chw[:, None] + 1) * rng.uniform(9, 13)
+                    + 0.6 * np.sin(yy[:, None] / rng.uniform(13, 21))
+                    + rng.uniform(0, 6))
+        # bark grain: stretched along the bole, smooth (a kron upscale shows as blocks)
+        noise = np.asarray(Image.fromarray(rng.normal(0, 1, (bh // 6 + 2, bw // 2 + 2)).astype(np.float32), "F")
+                           .resize((bw, bh), Image.BICUBIC), np.float32)
+        tex = 1.0 + 0.30 * np.clip(fr, -1, 0.2) ** 3 + 0.06 * noise
+        col = np.asarray(bark, np.float32)[None, None, :] * (shade * tex)[..., None]
+        # the hollow: a dark ragged split with a pale lip on its lit edge
+        if hollow is not None:
+            ht, hs = hollow
+            hi = int(np.clip(ht, 0, 1) * (n - 1))
+            hx, hy = cx[hi] + hw[hi] * 0.15 * -light, cy[hi]
+            # a split, not a hole: tall, narrow, leaning, pointed at both
+            # ends and ragged on one lip. A symmetric sine rag gives it a waist
+            # and it reads as a keyhole or a little standing figure (blind check).
+            dy = (yy[:, None] - hy) / hs
+            dx = (xs - hx - dy * hs * 0.12) / (hs * 0.30 * (1 - 0.55 * np.abs(np.clip(dy, -1, 1))) + 1e-3)
+            rag = 1 + 0.25 * np.clip(noise, -1, 1) * (dx > 0)
+            d = np.sqrt(dx * dx + dy * dy) / rag
+            hole = np.clip((1.0 - d) * 6, 0, 1)
+            lip = np.clip((1.12 - d) * 6, 0, 1) - hole
+            side = np.clip(-dx * light, 0, 1)
+            col = col * (1 - hole[..., None]) + np.array([0.05, 0.04, 0.035]) * hole[..., None]
+            col = col + (np.asarray(bark) * 0.5)[None, None, :] * (lip * side)[..., None]
+        tile = self.rgb[y0:y1, x0:x1]
+        self.rgb[y0:y1, x0:x1] = tile * (1 - a[..., None]) + col * a[..., None]
+        dt = self.depth[y0:y1, x0:x1]
+        self.depth[y0:y1, x0:x1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
+
+        # the rods: coverage, base colour low and tip colour high
+        L = height * (0.0 if years <= 0 else 0.55 * min(years, 6) ** 0.62)
+        segs = []
+        stubs = []
+        if years <= 0:
+            for kx, ky, ks in knuckles:
+                for j in range(int(rng.integers(1, 4))):
+                    a_ = np.radians(-90 + rng.normal(0, 25))
+                    l_ = ks * rng.uniform(0.25, 0.6)
+                    bx = kx + rng.normal(0, ks * 0.4)
+                    by = ky - ks * 0.5
+                    stubs.append((bx, by, bx + np.cos(a_) * l_, by + np.sin(a_) * l_, ks * 0.07))
+                # the cut faces: pale heartwood, seen nearly edge-on from the
+                # ground, so thin flat slivers on the knuckle tops, not discs
+                # (round white ovals in a row read as teeth)
+                if rng.random() < 0.7:
+                    fx = kx + rng.normal(0, ks * 0.2)
+                    self.stamp(fx, ky - ks * 0.62, ks * 0.34, tip_round(0.6),
+                               tuple(np.minimum(np.asarray(bark) * 1.5 + 0.08, 0.9)),
+                               depth=depth, opacity=0.6, aspect=0.3)
+        else:
+            # a lapsed pollard SELF-THINS: past a few years most rods are
+            # shaded out and the survivors thicken into poles with crowns
+            thin = 1.0 if years <= 3 else 3.0 / years
+            per = max(1, int(rods * thin) // max(1, len(knuckles)))
+            fat = 1.0 if years <= 3 else (years / 3.0) ** 0.7
+            for kx, ky, ks in knuckles:
+                out = (kx - hcx) / (R + 1e-6)
+                for j in range(per + int(rng.integers(-2, 3))):
+                    a_ = -90 + 38 * out + rng.normal(0, 9) + lean
+                    l_ = L * rng.uniform(0.45, 1.15)
+                    w_ = max(0.8, fat * girth * 0.04 * rng.uniform(0.6, 1.3) * (l_ / height) ** 0.5)
+                    px, py = kx + rng.normal(0, ks * 0.5), ky - ks * rng.uniform(0.0, 0.6)
+                    steps = 10
+                    for s in range(steps):
+                        # weight bends a long rod outward: more at the tip
+                        sa = np.radians(a_ + np.sign(a_ + 90 + 1e-6) * 9 * (s / steps) ** 2
+                                        * (l_ / height))
+                        qx = px + np.cos(sa) * l_ / steps
+                        qy = py + np.sin(sa) * l_ / steps
+                        segs.append((px, py, qx, qy, w_ * (1 - 0.75 * s / steps), s / steps))
+                        # older rods throw the odd side shoot in their top third
+                        if years >= 2 and s > steps * (0.6 if years <= 3 else 0.35) and rng.random() < min(0.6, 0.06 * years):
+                            ba = sa + np.radians(rng.choice([-1, 1]) * rng.uniform(20, 40))
+                            bl = l_ * rng.uniform(0.08, 0.2)
+                            segs.append((qx, qy, qx + np.cos(ba) * bl, qy + np.sin(ba) * bl,
+                                         w_ * 0.2, 1.0))
+                        px, py = qx, qy
+        # stubs of a fresh cut are old wood, not rods: bark-coloured, lit like the bole
+        for sx0, sy0, sx1, sy1, w in stubs:
+            self.stroke([(sx0, sy0), (sx1, sy1)], tuple(np.asarray(bark) * 0.7), width=max(1.0, w * 2),
+                        depth=depth, opacity=0.95, hardness=0.6)
+        # colour runs base -> tip in four bands, so a rod has no seam; on an
+        # old pole the lower wood has barked over and goes toward the bole
+        nb = 4
+        base = np.asarray(rod, np.float32)
+        if years > 3:
+            base = base + (np.asarray(bark, np.float32) - base) * min(1.0, (years - 3) / 5.0)
+        masks = [Image.new("L", (self.w * S, self.h * S), 0) for _ in range(nb)]
+        draws = [ImageDraw.Draw(mk) for mk in masks]
+        for sx0, sy0, sx1, sy1, w, f in segs:
+            ws = w * S
+            lw, val = (int(round(ws)), 255) if ws >= 1 else (1, int(255 * ws))
+            draws[min(nb - 1, int(f * nb))].line([(sx0 * S, sy0 * S), (sx1 * S, sy1 * S)],
+                                                 fill=val, width=lw)
+        for i, mk in enumerate(masks):
+            k = i / (nb - 1)
+            c_ = base * (1 - k) + np.asarray(rod_tip, np.float32) * k
+            cov = np.asarray(mk.resize((self.w, self.h), Image.BOX), np.float32) / 255.0
+            self.rgb = self.rgb * (1 - cov[..., None]) + c_ * cov[..., None]
+            self.depth = np.where(cov > 0.35, np.minimum(self.depth, float(depth)), self.depth)
+        self.ops.append(("pollard", years))
+        return self
+
 
 # ── tips ─────────────────────────────────────────────────────────────────────
 # Every brush on a sheet like that is the same idea: a shaped tip, stamped
