@@ -602,6 +602,45 @@ class Canvas:
         self.depth[Y0:Y1, X0:X1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
         return self
 
+    def poly(self, polygons, colour, depth=0.5, opacity=1.0, ss=4):
+        """
+        Fill one or more polygons with honest sub-pixel coverage: rasterised at
+        ss x, BOX-downsampled, used as alpha. For thin hard-edged things a brush
+        can't hold (blades, masts, cables, a bank seen edge-on), where a stroke
+        of width 0.6 is really a soft dab and a 1 px rect is a staircase.
+        Hand-rolled three times (a river bank, a willow bank, wind turbines)
+        before it came here.
+
+        polygons: one list of (x, y), or a list of them; all share one coverage
+        mask, so overlapping parts don't double up.
+        colour: an RGB tuple, or fn(ys, xs) -> (n, 3) for colour that varies
+        across the shape (a tower lit from one side, steel paler higher up).
+        Returns the coverage array for the touched box, or None.
+        """
+        from PIL import Image, ImageDraw
+        if polygons and np.ndim(polygons[0]) == 1:
+            polygons = [polygons]
+        pts = np.concatenate([np.asarray(p, np.float32) for p in polygons])
+        x0 = max(0, int(np.floor(pts[:, 0].min())) - 1); x1 = min(self.w, int(np.ceil(pts[:, 0].max())) + 2)
+        y0 = max(0, int(np.floor(pts[:, 1].min())) - 1); y1 = min(self.h, int(np.ceil(pts[:, 1].max())) + 2)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        m = Image.new("L", ((x1 - x0) * ss, (y1 - y0) * ss), 0)
+        d = ImageDraw.Draw(m)
+        for p in polygons:
+            d.polygon([((x - x0) * ss, (y - y0) * ss) for x, y in p], fill=255)
+        a = np.asarray(m.resize((x1 - x0, y1 - y0), Image.BOX), np.float32) / 255.0 * float(opacity)
+        tile = self.rgb[y0:y1, x0:x1]
+        if callable(colour):
+            ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+            col = np.asarray(colour(ys.ravel(), xs.ravel()), np.float32).reshape(tile.shape)
+        else:
+            col = np.asarray(colour, np.float32)
+        self.rgb[y0:y1, x0:x1] = tile * (1.0 - a[..., None]) + col * a[..., None]
+        dt = self.depth[y0:y1, x0:x1]
+        self.depth[y0:y1, x0:x1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
+        return a
+
     def fill_spine(self, spine, halfwidth, colour, depth=0.5, opacity=1.0,
                    hardness=0.42, brush=6.0, overlap=0.55, taper=0.0):
         """

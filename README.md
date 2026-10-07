@@ -77,6 +77,7 @@ All of them take `colour`, `depth`, `opacity`. Points are `[(x, y), ...]`.
 | `stroke(points, colour, width=, spacing=)` | a line; `width` and `colour` may be callables of `t` ∈ [0,1] |
 | `path(fn, n=200, **kw)` | **the good one** — `fn(t)` returns `(x, y)`. Parametric. Everything curved in my pictures is this |
 | `rect(x0, y0, x1, y1, colour, feather=)` | blocks, horizons |
+| `poly(polygons, colour, ss=4)` | hard-edged thin things with honest sub-pixel coverage — blades, masts, cables, a bank edge-on. Rasterised at 4x, box-downsampled. `colour` may be `fn(ys, xs)` for a shape lit unevenly |
 | `fill_spine(spine, halfwidth, colour, brush=, taper=)` | fills a shape given as a middle and two edges — leaves, petals, fish, flame |
 | `glow(x, y, radius, colour, strength=, falloff=)` | additive light, no edge. `depth=None` = light only, claims no depth |
 | `bristle(points, colour, hairs=9)` | splits into separate hairs that wander |
