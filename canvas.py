@@ -659,6 +659,56 @@ class Canvas:
         self.depth[y0:y1, x0:x1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
         return a
 
+    @staticmethod
+    def qtip_polys(x, y, r, rot=0.0, squash=1.0, n=15):
+        """
+        The outline of one or more q-tip clusters, as polygons for poly().
+        Use this when building up a big batch to fill in one call (several
+        colours of one crown, say); use qtip() to just paint some.
+
+        x, y, r, rot, squash: scalars or equal-length arrays.
+        """
+        x, y, r, rot, squash = np.broadcast_arrays(*(np.atleast_1d(np.asarray(v, np.float32))
+                                                     for v in (x, y, r, rot, squash)))
+        circ = np.linspace(0, 2 * np.pi, n)
+        out = []
+        for cx, cy, r_, a0, sq in zip(x, y, r, rot, squash):
+            for k in range(3):
+                a = a0 + k * 2.0944
+                ox, oy = np.cos(a) * r_ * 0.52, np.sin(a) * r_ * 0.52 * sq
+                out.append(list(zip(cx + ox + r_ * 0.72 * np.cos(circ),
+                                    cy + oy + r_ * 0.72 * np.sin(circ) * sq)))
+        return out
+
+    def qtip(self, x, y, r, colour, rot=None, squash=1.0, depth=0.5, opacity=1.0,
+             seed=0):
+        """
+        Foliage as MASS: three hard discs in a clover, the dab of three cotton
+        buds taped together (an old acrylic trick for autumn trees).
+
+        Why not dab() or canopy(): a round dab is CONVEX, every point of its
+        edge bulges outward, and convex marks stacked up read as foam, bubbles,
+        cumulus. Nine renders of one avenue came out as weather for exactly
+        that reason. Three overlapping circles have RE-ENTRANT notches where
+        they meet, the outline turns back into the shape, and that concavity
+        is what the eye calls leaves. It works for anything massed and clumped:
+        crowns, blossom, lichen, a crowd at distance.
+
+        All clusters in one call share ONE coverage mask (via poly), so overlaps
+        don't double and the union edge stays hard. Vary colour by calling it
+        a few times with different subsets, not by softening the edge.
+
+        x, y, r: scalars or arrays. rot: None = random per cluster.
+        squash < 1 flattens clusters (foreshortened crowns seen from below).
+        Order that worked: leaves first as mass, wood in front, then a few
+        clusters back OVER the wood so limbs come and go.
+        """
+        x = np.atleast_1d(np.asarray(x, np.float32))
+        if rot is None:
+            rot = np.random.default_rng(seed).uniform(0, 2 * np.pi, x.size)
+        return self.poly(self.qtip_polys(x, y, r, rot, squash), colour,
+                         depth=depth, opacity=opacity)
+
     def fill_spine(self, spine, halfwidth, colour, depth=0.5, opacity=1.0,
                    hardness=0.42, brush=6.0, overlap=0.55, taper=0.0):
         """
