@@ -30,6 +30,24 @@ from contextlib import contextmanager
 FAR = 1.0
 
 
+def blur(a, r, n=3):
+    """
+    Separable box blur, n passes (~gaussian). 2-D or H x W x C. Every painting
+    script was carrying its own copy of this; now there's one.
+    """
+    r = int(max(1, r))
+    out = np.asarray(a, np.float32)
+    for _ in range(n):
+        for ax in (0, 1):
+            pad = [(r + 1, r) if i == ax else (0, 0) for i in range(out.ndim)]
+            p = np.pad(out, pad, mode="edge")
+            cs = np.cumsum(p, axis=ax, dtype=np.float64)
+            hi = np.take(cs, np.arange(2 * r + 1, cs.shape[ax]), axis=ax)
+            lo = np.take(cs, np.arange(0, cs.shape[ax] - 2 * r - 1), axis=ax)
+            out = ((hi - lo) / (2 * r + 1)).astype(np.float32)
+    return out
+
+
 class Canvas:
     def __init__(self, width, height, background=(0.0, 0.0, 0.0)):
         self.w, self.h = int(width), int(height)
@@ -702,6 +720,71 @@ class Canvas:
             self.stroke([mid[i] - n * w, mid[i] + n * w], colour, width=b,
                         depth=depth, opacity=opacity, hardness=hardness, spacing=0.26)
         return self
+
+    def repaint(self, ref, R, thresh=0.04, maxlen=6, allow=None, opacity=0.92,
+                hardness=0.45, width=0.6, jitter=0.6, depth=0.5, seed=0):
+        """
+        Paint a reference INTO the canvas with brushstrokes of radius ~R, only
+        where the canvas still disagrees with it (Hertzmann 1998, 'Painterly
+        rendering with curved brush strokes of multiple sizes'). Call it with
+        falling R, big to small: each layer looks at the reference blurred to
+        its own brush size, so large strokes carry masses and small ones only
+        go where detail is still missing.
+
+        Strokes run ACROSS the value gradient, along the form, and stop when
+        the next step would make the canvas worse. `allow` (H x W, 0..1) says
+        where this size of brush is allowed to go at all: the drawing decides
+        WHERE, the reference decides WHAT.
+
+        The reference can be a photo, which makes this a filter (honestly, it
+        is one), or a plate you computed yourself, which makes it an
+        underpainting you then paint from. Returns the number of strokes.
+        """
+        rng = np.random.default_rng(seed)
+        ref = np.asarray(ref, np.float32)
+        H, W = self.h, self.w
+        if allow is None:
+            allow = np.ones((H, W), np.float32)
+        blurred = blur(ref, max(1, int(R * 0.9)))
+        L = blurred @ np.array([0.299, 0.587, 0.114], np.float32)
+        gy, gx = np.gradient(blur(L, max(1, int(R * 0.6))))
+        err = np.sqrt(((self.rgb - blurred) ** 2).sum(-1))
+        step = max(2, int(R * 0.9))
+        cells = []
+        for y0 in range(0, H, step):
+            for x0 in range(0, W, step):
+                e = err[y0:y0 + step, x0:x0 + step]
+                a = float(allow[y0:y0 + step, x0:x0 + step].mean())
+                if e.mean() * (0.15 + 0.85 * a) < thresh or rng.random() > a + 0.05:
+                    continue
+                j = np.unravel_index(np.argmax(e), e.shape)
+                cells.append((y0 + j[0], x0 + j[1]))
+        rng.shuffle(cells)
+        for (y, x) in cells:
+            col = blurred[y, x]
+            pts = [(float(x), float(y))]
+            px, py = float(x), float(y)
+            dx0 = dy0 = 0.0
+            for k in range(maxlen):
+                iy, ix = int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))
+                g0, g1 = gx[iy, ix], gy[iy, ix]
+                n = math.hypot(g0, g1)
+                if n < 1e-5:
+                    break
+                dx, dy = -g1 / n, g0 / n
+                if dx * dx0 + dy * dy0 < 0:
+                    dx, dy = -dx, -dy
+                px += dx * R; py += dy * R
+                dx0, dy0 = dx, dy
+                iy, ix = int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))
+                if k > 1 and np.abs(blurred[iy, ix] - col).sum() > np.abs(blurred[iy, ix] - self.rgb[iy, ix]).sum():
+                    break
+                pts.append((px, py))
+            if len(pts) < 2:
+                pts.append((x + rng.normal() * jitter * R, y + rng.normal() * jitter * R))
+            self.stroke(pts, tuple(np.clip(col * (1 + rng.normal(0, 0.025, 3)), 0, None)),
+                        width=R * width, opacity=opacity, hardness=hardness, depth=depth)
+        return len(cells)
 
     def glow(self, x, y, radius, colour, depth=0.6, strength=1.0, falloff=2.0):
         """
