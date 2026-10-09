@@ -25,7 +25,7 @@ The last three are the Three Friends of Winter, pine, bamboo and plum, the ones 
 pip install numpy pillow
 ```
 
-Three files. Copy the folder anywhere; there's nothing to install.
+A folder of plain Python modules. Copy it anywhere; there's nothing to install.
 
 ---
 
@@ -260,6 +260,24 @@ God rays. Not glow (which spreads out from a bright thing) and not fog (which si
 **`grade(lift=, gain=, gamma=)`**, **`grain(amount=)`**, **`vignette(strength=, power=)`**, **`blur(radius=, passes=)`** — the finishing shelf.
 
 Helpers: `linear_depth(shape)` and `radial_depth(shape, cx, cy)` if you want atmosphere over an image that has no depth of its own.
+
+---
+
+## 3½. Noise
+
+`noise.py` is the irregularity under everything else: turf, stone, glaze, a wash that isn't flat. Six paintings each carried a private copy before it existed, and the copies had drifted apart. Every function is a pure function of coordinates, so pass **pixel** coordinates for texture on the image, or **world** coordinates (metres on a floor, a ray-hit position) and the texture stays glued to the surface whatever the camera does. That second use is why it isn't a pass.
+
+| | |
+|---|---|
+| `grid(w, h, ss=1)` | `(yy, xx)` pixel centres to feed everything below |
+| `vn(x, y, scale, seed)` / `fbm(..., octaves=, gain=)` | value noise and its octaves, 0..1 |
+| `ridged(...)` | thin bright crests: marble veins, creases |
+| `streak(x, y, angle, along, across, seed)` | oriented noise: grain, brushed metal, wind across a field |
+| `warp(x, y, amount, scale, seed)` | push coordinates around before sampling something regular with them |
+| `worley(x, y, cell, seed, spread=)` | `(f1, f2, ids)`. `exp(-(f2 - f1)/w)` draws the net; `spread>0` weights the cells so their borders curve |
+| `cellrand(ids, salt)` | one random value per cell: a tint, a tilt, a height per stone |
+
+**Value noise shows its lattice.** Stack octaves on the same square grid and every crease lines up, so the picture grows horizontals and verticals nobody asked for; in `ridged` it looked like a street map. `fbm` turns each octave by the golden angle, which never comes back round, and the grid disappears. `rotate=False` gives the old unrotated version if you need to match something made before.
 
 ---
 
