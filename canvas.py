@@ -1623,6 +1623,163 @@ class Canvas:
             self.dab(x, y, r, paint, depth, 0.55, hardness)
         return self
 
+    def leaf(self, to_screen, halfwidth, colour, size, rib=None, rim=None,
+             veins=5, vein_angle=0.8, petiole=0.22, depth=0.5, opacity=0.95,
+             hardness=0.45, rib_opacity=0.7, seed=0):
+        """
+        ONE leaf, painted the way a hand paints one: from the midrib outward
+        along the veins, each half its own run of strokes, then the rim, then
+        the rib on top. The midrib is a seam in the paint, not a line drawn
+        over a flat fill.
+
+        Written 10 Oct 2026 because repaint() rounds a 40 px leaf into a lemon,
+        and the fix in that painting was to paste the sharp rendered leaves
+        back over the finished brushwork. Somebody looking at it said they
+        read as stickers: the only things in the picture the brush never
+        touched. Correct. A brush that can't make a leaf leaves you pasting.
+
+        to_screen(s, t) -> (x, y), arrays in, arrays out. s runs along the
+            midrib (0 = petiole, 1 = tip), t across it, in the same units as
+            halfwidth. It's a map from leaf space into the picture, so a leaf
+            lying in perspective is foreshortened by the same projection as
+            the ground it lies on, and stays one leaf instead of an ellipse.
+        halfwidth(s) -> half-width at s (array in, array out). Zero at the tip.
+        colour: rgb, or a callable (x, y, s, t) -> rgb, sampled once per
+            stroke at its middle. Sampling a rendered plate here is the
+            intended use: the plate knows the light, the brush makes the marks.
+        size: body-stroke RADIUS in px where the leaf is widest. Strokes
+            narrow themselves wherever the leaf is narrower on screen, so the
+            tip doesn't get a rib wider than itself (the fill_spine lesson).
+        rib, rim: rgb or None (skip). The midrib + laterals, and the edge.
+        """
+        rng = np.random.default_rng(seed)
+        _hw = halfwidth
+        # a sin()**p width curve goes NaN the moment sin dips a hair below zero
+        # at the tip; the stroke code then can't count its dabs
+        halfwidth = lambda s: np.clip(np.nan_to_num(np.asarray(_hw(s), np.float32)), 0, None)
+
+        def pt(s, t):
+            x, y = to_screen(np.atleast_1d(np.asarray(s, np.float32)),
+                             np.atleast_1d(np.asarray(t, np.float32)))
+            return np.stack([np.asarray(x, np.float32).ravel(),
+                             np.asarray(y, np.float32).ravel()], 1)
+
+        def col_at(s, t):
+            if not callable(colour):
+                return np.asarray(colour, np.float32)
+            p = pt(s, t)[0]
+            return np.asarray(colour(p[0], p[1], s, t), np.float32)
+
+        # how wide is the leaf ON SCREEN at s, and how long is the midrib
+        ss = np.linspace(0.0, 1.0, 64)
+        mid = pt(ss, np.zeros_like(ss))
+        hw = np.asarray(halfwidth(ss), np.float32)
+        edge = pt(ss, hw)
+        scr_hw = np.linalg.norm(edge - mid, axis=1)
+        length = float(np.linalg.norm(np.diff(mid, axis=0), axis=1).sum())
+        if length < 2:
+            return self
+
+        def inset(s, r_px):
+            """a mark of radius r_px whose CENTRE sits here stays inside the edge"""
+            h = np.asarray(halfwidth(np.atleast_1d(s)), np.float32)
+            k = np.interp(np.clip(s, 0, 1), ss, scr_hw / np.maximum(hw, 1e-4))
+            return np.clip(h - r_px / np.maximum(k, 1e-4), 0, None)
+
+        def radius_at(s):
+            return float(np.clip(0.5 * np.interp(s, ss, scr_hw), 0.6, size))
+
+        # where the leaf actually starts: a cordate base has lobes behind s=0
+        probe = np.linspace(-0.5, 0.0, 51)
+        has = np.asarray(halfwidth(probe)) > 1e-4
+        s_lo = float(probe[np.argmax(has)]) if has.any() else 0.0
+
+        # the silhouette, rasterised 4x and averaged: everything the body
+        # strokes put down OUTSIDE it is taken back afterwards. Soft dab tails
+        # stack (ten dabs at 6% each is a halo), and no amount of insetting
+        # the radii fixed that; cutting in the edge did.
+        from PIL import Image, ImageDraw
+        so = np.linspace(s_lo, 1.0, 120)
+        ho = np.asarray(halfwidth(so), np.float32)
+        outline = np.concatenate([pt(so, ho), pt(so[::-1], -ho[::-1])], 0)
+        x0 = max(0, int(outline[:, 0].min()) - 4); x1 = min(self.w, int(outline[:, 0].max()) + 5)
+        y0 = max(0, int(outline[:, 1].min()) - 4); y1 = min(self.h, int(outline[:, 1].max()) + 5)
+        if x1 <= x0 or y1 <= y0:
+            return self
+        im = Image.new("L", ((x1 - x0) * 4, (y1 - y0) * 4), 0)
+        ImageDraw.Draw(im).polygon([((p[0] - x0) * 4, (p[1] - y0) * 4) for p in outline], fill=255)
+        sil = np.asarray(im, np.float32).reshape(y1 - y0, 4, x1 - x0, 4).mean((1, 3)) / 255.0
+        sil = blur(sil, 0.8)[..., None]
+        keep = (self.rgb[y0:y1, x0:x1].copy(), self.height[y0:y1, x0:x1].copy(),
+                self.depth[y0:y1, x0:x1].copy())
+
+        # 0. block in: the whole shape, flat, a touch darker, cross strokes.
+        # Without it the vein strokes fan apart toward the rim and the ground
+        # shows between them: a palm frond, not a leaf.
+        base = col_at(0.45, 0.1) * 0.94
+        nb = max(8, int(length / max(1.0, size * 0.5)))
+        for s0 in np.linspace(s_lo, 0.99, nb):
+            rb = min(size, radius_at(max(s0, 0.0)) * 1.4)
+            w0 = float(inset(s0, rb)[0])
+            if w0 <= 1e-4:
+                continue
+            self.stroke(pt(np.full(5, s0), np.linspace(-w0, w0, 5)), base,
+                        width=rb, depth=depth,
+                        opacity=opacity, hardness=0.55, spacing=0.3)
+
+        # 1. the body: strokes pulled out from the rib along the vein direction
+        n = max(6, int(length / max(1.0, size * 0.8)))
+        for sg in (1.0, -1.0):
+            for s0 in np.linspace(s_lo * 0.3, 0.97, n) + rng.uniform(-0.3, 0.3, n) / n:
+                s0 = float(np.clip(s0, s_lo * 0.3, 0.985))
+                w0 = float(halfwidth(np.array([max(s0, 0.02)]))[0])
+                if w0 <= 1e-4:
+                    continue
+                # veins near the base fan BACKWARDS into the lobes, the rest
+                # run forward toward the tip; one direction for all of them
+                # leaves the base unpainted
+                lean = float(np.clip((s0 - 0.06) / 0.22, -0.9, 1.0))
+                u = np.linspace(0.0, 1.0, 9)
+                su = np.clip(s0 + vein_angle * lean * u * w0, s_lo, 1)
+                r0 = radius_at(s0)
+                tu = sg * u * inset(su, r0 * 0.65)
+                path = pt(su, tu)
+                c = col_at(float(su[3]), float(tu[3]) * 0.8)
+                c = np.clip(c * (1.0 + rng.normal(0, 0.035)), 0, 1)
+                self.stroke(path, c, width=lambda q, r0=r0: r0 * (1.0 - 0.35 * q),
+                            depth=depth, opacity=opacity, hardness=hardness, spacing=0.18)
+
+        # cut in
+        self.rgb[y0:y1, x0:x1] = keep[0] + (self.rgb[y0:y1, x0:x1] - keep[0]) * sil
+        self.height[y0:y1, x0:x1] = keep[1] + (self.height[y0:y1, x0:x1] - keep[1]) * sil[..., 0]
+        self.depth[y0:y1, x0:x1] = np.where(sil[..., 0] > 0.5, self.depth[y0:y1, x0:x1], keep[2])
+
+        # 2. the rim: one broken stroke down each edge
+        if rim is not None:
+            for sg in (1.0, -1.0):
+                s_ = np.linspace(s_lo, 1.0, 48)
+                path = pt(s_, sg * np.asarray(halfwidth(s_), np.float32) * 0.96)
+                self.stroke(path, rim, width=lambda q: max(0.6, size * 0.22 * (1 - q * 0.6)),
+                            depth=depth, opacity=lambda q: 0.45 * (0.6 + 0.4 * np.sin(q * 23 + seed) ** 2),
+                            hardness=0.5)
+
+        # 3. the rib and the laterals, on top, thin, not opaque
+        if rib is not None:
+            s_ = np.linspace(-petiole, 0.93, 40)
+            self.stroke(pt(s_, np.zeros_like(s_)), rib,
+                        width=lambda q: max(0.5, size * 0.16 * (1 - 0.8 * q)),
+                        depth=depth, opacity=rib_opacity, hardness=0.6)
+            for k in range(veins):
+                s0 = 0.10 + 0.62 * k / max(1, veins - 1)
+                w0 = float(halfwidth(np.array([s0]))[0])
+                for sg in (1.0, -1.0):
+                    u = np.linspace(0.0, 0.82, 6)
+                    su = np.clip(s0 + vein_angle * u * w0, 0, 1)
+                    tu = sg * u * np.asarray(halfwidth(su), np.float32)
+                    self.stroke(pt(su, tu), rib, width=lambda q: max(0.45, size * 0.08 * (1 - q)),
+                                depth=depth, opacity=rib_opacity * 0.5, hardness=0.6)
+        return self
+
     def canopy(self, x, y, spread, colour, depth=0.5, shade=0.55, count=None,
                size=None, opacity=(0.72, 0.95), sun=(-0.35, -0.85), seed=0,
                fall=0.44, hardness=0.30):
