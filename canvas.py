@@ -870,6 +870,94 @@ class Canvas:
             self.depth[y0:y1, x0:x1] = np.where(a > 0.30, np.minimum(dt, float(depth)), dt)
         return self
 
+    @staticmethod
+    def plume_density(width, height, points, radius, seed=0, wisp=0.6,
+                      curl=None, clump=0.55, x0=0, y0=0):
+        """
+        A density field for a cloud hanging in water or air, 0..~1, built along
+        a path. `points` is where the cloud was laid down (a jet, a puff that
+        drifted); `radius` its half-width there, a number or a callable of t
+        in [0,1]. The coordinates are warped twice by noise before the blobs
+        are measured, which is what turns a row of beads into something that
+        has been stirred; `wisp` adds ridged filaments that only live at the
+        thin edges, where a real cloud tears into threads. `clump` takes holes
+        out of the middle so it isn't a uniform felt.
+
+        Returns float32 (height, width). Feed it to `plume`, or to anything
+        else that wants a soft volume (a mask, a depth).
+        """
+        import noise as nz
+        yy, xx = nz.grid(width, height)
+        xx, yy = xx + x0, yy + y0
+        pts = np.asarray(points, np.float32)
+        r_mean = float(np.mean([radius(t) if callable(radius) else radius
+                                for t in np.linspace(0, 1, 9)]))
+        c = curl if curl is not None else 0.55 * r_mean
+        u, v = nz.warp(xx, yy, c, 1.3 * r_mean, seed, octaves=3)
+        u, v = nz.warp(u, v, 0.35 * c, 0.4 * r_mean, seed + 7, octaves=2)
+        # resample the path so the blobs are close enough to merge
+        seg = np.hypot(*np.diff(pts, axis=0).T)
+        L = float(seg.sum())
+        n = max(2, int(L / max(2.0, 0.35 * r_mean)) + 1)
+        s = np.concatenate([[0.0], np.cumsum(seg)])
+        ts = np.linspace(0, L, n)
+        px = np.interp(ts, s, pts[:, 0])
+        py = np.interp(ts, s, pts[:, 1])
+        d = np.zeros((height, width), np.float32)
+        for k in range(n):
+            t = ts[k] / max(1e-6, L)
+            r = radius(t) if callable(radius) else radius
+            q = np.square(u - px[k]) + np.square(v - py[k])
+            d = np.maximum(d, np.exp(-q / (2.0 * (0.5 * r) ** 2)))
+        if clump > 0:
+            holes = nz.fbm(u, v, 0.6 * r_mean, seed + 13, octaves=3)
+            d *= (1.0 - clump) + clump * np.clip(1.6 * holes - 0.1, 0, 1)
+        if wisp > 0:
+            edge = d * (1.0 - d) * 4.0               # only where it's thin
+            threads = nz.ridged(u, v, 0.5 * r_mean, seed + 29, octaves=3)
+            d = d + wisp * edge * np.clip(threads * 1.6 - 0.5, 0, 1)
+        return d.astype(np.float32)
+
+    def plume(self, density, thick, thin=None, absorb=3.0, depth=None, at=(0, 0)):
+        """
+        A suspension that EATS light: ink in water, soot, silt, a squid's
+        smoke screen. The subtractive sibling of `mist`, and the choice
+        between them is a question about the material (scatters or absorbs),
+        not about how strong the mark should be.
+
+        WHY IT HAD TO EXIST (17 Oct 2026, an octopus inking in its sleep).
+        Cephalopod ink is melanin: almost nothing comes back off it. `mist`
+        adds light, so an ink cloud painted with it glows, and `dab` covers
+        with a hard edge where a cloud has none. What a cloud of absorber does
+        is attenuate what's behind it by exp(-absorb * density) (Beer-Lambert)
+        and put back a little of its own colour where it's thick. And the thin
+        edges aren't just weaker thick: they pick up the ambient light, so
+        they shift hue, warm brown going toward the water's colour. `thin` is
+        that edge colour; `thick` the core.
+
+        `density` is a full-size array, or a patch placed at `at`=(x, y).
+        depth: if given, written where the cloud is nearly opaque, so fog
+        passes treat a thick plume as a thing standing in the water.
+        """
+        dens = np.asarray(density, np.float32)
+        x0, y0 = int(at[0]), int(at[1])
+        h, w = dens.shape
+        X0, Y0 = max(0, x0), max(0, y0)
+        X1, Y1 = min(self.w, x0 + w), min(self.h, y0 + h)
+        if X1 <= X0 or Y1 <= Y0:
+            return self
+        dd = dens[Y0 - y0:Y1 - y0, X0 - x0:X1 - x0]
+        T = np.exp(-float(absorb) * np.clip(dd, 0, None))[..., None]
+        k = np.asarray(thick, np.float32)
+        t = np.asarray(thin if thin is not None else thick, np.float32)
+        col = k + (t - k) * T                    # thin parts take the edge colour
+        rgb = self.rgb[Y0:Y1, X0:X1]
+        self.rgb[Y0:Y1, X0:X1] = rgb * T + col * (1.0 - T)
+        if depth is not None:
+            dt = self.depth[Y0:Y1, X0:X1]
+            self.depth[Y0:Y1, X0:X1] = np.where(T[..., 0] < 0.15, np.minimum(dt, float(depth)), dt)
+        return self
+
     # ── walking a path, once, for every kind of mark to reuse ────────────────
 
     def _walk(self, points, step):
