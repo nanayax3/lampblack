@@ -789,6 +789,18 @@ class Canvas:
         The reference can be a photo, which makes this a filter (honestly, it
         is one), or a plate you computed yourself, which makes it an
         underpainting you then paint from. Returns the number of strokes.
+
+        THE HALO. A subject repainted over a flat ground grows a pale rim
+        that parameter changes don't remove. Measured: it is not a value
+        error (the rim matches the reference's value or is darker). It is
+        DIRECTION. Strokes follow iso-lines, and beside an edge the iso-line
+        is the edge, so the ground next to the subject gets a ring of
+        contour-following strokes that cuts across its own texture, and the
+        eye reads that as an outline. And `allow` only gates where a stroke
+        STARTS: at R=14, maxlen=8 a stroke can run 100 px off the subject.
+        What works: paint the ground with its own strokes, call repaint with
+        `allow` = the subject only, then put back whatever landed outside a
+        slightly dilated subject mask (masking fluid), rgb and height both.
         """
         rng = np.random.default_rng(seed)
         ref = np.asarray(ref, np.float32)
