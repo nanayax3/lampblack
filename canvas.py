@@ -772,7 +772,8 @@ class Canvas:
         return self
 
     def repaint(self, ref, R, thresh=0.04, maxlen=6, allow=None, opacity=0.92,
-                hardness=0.45, width=0.6, jitter=0.6, depth=0.5, seed=0):
+                hardness=0.45, width=0.6, jitter=0.6, depth=0.5, seed=0,
+                angle=None, pull=0.0, stretch=None):
         """
         Paint a reference INTO the canvas with brushstrokes of radius ~R, only
         where the canvas still disagrees with it (Hertzmann 1998, 'Painterly
@@ -801,12 +802,34 @@ class Canvas:
         What works: paint the ground with its own strokes, call repaint with
         `allow` = the subject only, then put back whatever landed outside a
         slightly dilated subject mask (masking fluid), rgb and height both.
+
+        REGIONS. One stroke schedule for the whole picture reads as a filter:
+        the same blob everywhere. A painter changes hand by region, long and
+        level across a sky, up and down a wall, short and stabbing in leaves.
+        `angle` (radians, a number or H x W, NaN = no preference) is the
+        direction the hand wants to go there; `pull` (0..1, number or H x W)
+        is how hard it wins against the iso-line. With pull > 0 a stroke no
+        longer dies where the reference is flat, which is exactly where the
+        blobs came from: a flat sky has no gradient to follow, so every stroke
+        was one dab. `stretch` (number or H x W, read where a stroke starts)
+        multiplies maxlen, so a sky can take long strokes in the same pass
+        that keeps foliage short. The hand yields at edges: pull falls off
+        where the value changes by more than ~0.08 across one brush width,
+        or a vertical wall stroke drags the clock face down into the stucco.
         """
         rng = np.random.default_rng(seed)
         ref = np.asarray(ref, np.float32)
         H, W = self.h, self.w
         if allow is None:
             allow = np.ones((H, W), np.float32)
+        def _field(v, fill):
+            if v is None:
+                return np.full((H, W), fill, np.float32)
+            v = np.asarray(v, np.float32)
+            return np.broadcast_to(v, (H, W)) if v.ndim == 0 else v
+        angle = _field(angle, np.nan)
+        pull = _field(pull, 0.0)
+        stretch = _field(stretch, 1.0)
         blurred = blur(ref, max(1, int(R * 0.9)))
         L = blurred @ np.array([0.299, 0.587, 0.114], np.float32)
         gy, gx = np.gradient(blur(L, max(1, int(R * 0.6))))
@@ -827,13 +850,30 @@ class Canvas:
             pts = [(float(x), float(y))]
             px, py = float(x), float(y)
             dx0 = dy0 = 0.0
-            for k in range(maxlen):
+            for k in range(max(1, int(round(maxlen * float(stretch[y, x]))))):
                 iy, ix = int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))
                 g0, g1 = gx[iy, ix], gy[iy, ix]
                 n = math.hypot(g0, g1)
-                if n < 1e-5:
+                a, w = float(angle[iy, ix]), float(pull[iy, ix])
+                hand = w > 0 and a == a
+                if hand and n >= 1e-5:
+                    w /= 1.0 + (n * R / 0.08) ** 2   # the hand yields at edges: form wins there
+                if n < 1e-5 and not hand:
                     break
-                dx, dy = -g1 / n, g0 / n
+                dx, dy = (-g1 / n, g0 / n) if n >= 1e-5 else (0.0, 0.0)
+                if hand:
+                    ax, ay = math.cos(a), math.sin(a)
+                    if (k == 0 and rng.random() < 0.5) or ax * dx0 + ay * dy0 < 0:
+                        ax, ay = -ax, -ay        # either way along the line, then keep going
+                    if ax * dx + ay * dy < 0:
+                        dx, dy = -dx, -dy
+                    if n < 1e-5:
+                        w = 1.0
+                    dx, dy = (1 - w) * dx + w * ax, (1 - w) * dy + w * ay
+                    m = math.hypot(dx, dy)
+                    if m < 1e-5:
+                        break
+                    dx, dy = dx / m, dy / m
                 if dx * dx0 + dy * dy0 < 0:
                     dx, dy = -dx, -dy
                 px += dx * R; py += dy * R
