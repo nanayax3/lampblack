@@ -879,7 +879,8 @@ class Canvas:
 
     def repaint(self, ref, R, thresh=0.04, maxlen=6, allow=None, opacity=0.92,
                 hardness=0.45, width=0.6, jitter=0.6, depth=0.5, seed=0,
-                angle=None, pull=0.0, stretch=None, mark="round", dry=0.5):
+                angle=None, pull=0.0, stretch=None, mark="round", dry=0.5,
+                minlen=0):
         """
         Paint a reference INTO the canvas with brushstrokes of radius ~R, only
         where the canvas still disagrees with it (Hertzmann 1998, 'Painterly
@@ -928,6 +929,15 @@ class Canvas:
         lays it with flat(): square pressed start, tapering body, a tail that
         runs dry along the hairs (`dry`), height ridged at the edges. `hardness`
         only applies to round.
+
+        THE STAMP. A stroke stops the moment its next step would make the
+        canvas worse, and against a detailed reference that is after one or
+        two steps, so a flat mark comes out about twice as long as it is wide:
+        a stamp, with no room for a start or a tail. `minlen` (in steps of R)
+        is how far the hand carries a stroke through small errors before it
+        is allowed to lift. It still stops at a real edge: the error has to
+        be more than twice the canvas's own disagreement to cut it short.
+        3 gives a flat mark an aspect of about 4-5.
         """
         rng = np.random.default_rng(seed)
         ref = np.asarray(ref, np.float32)
@@ -968,7 +978,7 @@ class Canvas:
             dx0 = dy0 = 0.0
             # a flat mark shows its ends, so equal lengths lay courses like brickwork
             vary = rng.uniform(0.55, 1.45) if mark == "flat" else 1.0
-            for k in range(max(1, int(round(maxlen * float(stretch[y, x]) * vary)))):
+            for k in range(max(1, minlen, int(round(maxlen * float(stretch[y, x]) * vary)))):
                 iy, ix = int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))
                 g0, g1 = gx[iy, ix], gy[iy, ix]
                 n = math.hypot(g0, g1)
@@ -977,7 +987,13 @@ class Canvas:
                 if hand and n >= 1e-5:
                     w /= 1.0 + (n * R / 0.08) ** 2   # the hand yields at edges: form wins there
                 if n < 1e-5 and not hand:
-                    break
+                    if k >= minlen:
+                        break
+                    if dx0 == 0.0 and dy0 == 0.0:      # nothing to follow: pick a way
+                        t = rng.uniform(0, math.pi)
+                        g1, g0, n = -math.cos(t), math.sin(t), 1.0
+                    else:                              # carry on the way it was going
+                        g1, g0, n = -dx0, dy0, 1.0
                 dx, dy = (-g1 / n, g0 / n) if n >= 1e-5 else (0.0, 0.0)
                 if hand:
                     ax, ay = math.cos(a), math.sin(a)
@@ -997,7 +1013,12 @@ class Canvas:
                 px += dx * R; py += dy * R
                 dx0, dy0 = dx, dy
                 iy, ix = int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))
-                if k > 1 and np.abs(blurred[iy, ix] - col).sum() > np.abs(blurred[iy, ix] - self.rgb[iy, ix]).sum():
+                worse = np.abs(blurred[iy, ix] - col).sum()
+                now = np.abs(blurred[iy, ix] - self.rgb[iy, ix]).sum()
+                if k < minlen:
+                    if worse > 2.0 * now + 0.15:   # a real edge still stops the hand
+                        break
+                elif k > 1 and worse > now:
                     break
                 pts.append((px, py))
             if len(pts) < 2:
