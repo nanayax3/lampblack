@@ -421,6 +421,112 @@ class Canvas:
             )
         return self
 
+    def flat(self, points, colour, width=6.0, depth=0.5, opacity=1.0, load=None,
+             press=0.12, taper=0.45, dry=0.5, streaks=7, ragged=0.12, ridge=0.6,
+             seed=0):
+        """
+        One mark from a FLAT brush, rasterised whole instead of as a row of
+        round dabs. `width` is the half-width, like stroke()'s radius.
+
+        WHY (23 Oct 2026). A blind read of a repainted picture kept saying
+        'photo through an oil-paint filter', and after the stroke DIRECTION was
+        fixed it still said it. What was left was the mark itself: every
+        stroke was a soft round sausage, the same everywhere. What a loaded
+        flat brush actually leaves: a square-ish start where it was pressed
+        down, full and hard-edged (`press` is how much of the length that
+        takes); a body that narrows toward the lift (`taper`, the end width
+        lost); a tail that runs out of paint and breaks along the bristles
+        (`dry`: 0 never runs out, 1 is in tatters by the end); lines along the
+        stroke where some hairs carried more than others (`streaks`, how many
+        across the width); edges that are hard but not ruled (`ragged`); and
+        paint shoved to the sides, so the height has a ridge at each edge
+        (`ridge`).
+
+        Every pixel in the stroke's box is placed by its nearest point on the
+        polyline: t along it (0..1) and s across it (-1..1). Everything above
+        is a function of (t, s), which is why it costs about one dab.
+        """
+        pts = np.asarray(points, np.float32).reshape(-1, 2)
+        if len(pts) < 2:
+            return self
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        keep = np.concatenate([[True], seg > 1e-3])
+        pts = pts[keep]
+        if len(pts) < 2:
+            return self
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        total = float(seg.sum())
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        r = np.random.default_rng(seed)
+        w = max(0.6, float(width))
+        reach = int(np.ceil(w * 1.3)) + 2
+        y0 = max(0, int(pts[:, 1].min()) - reach); y1 = min(self.h, int(pts[:, 1].max()) + reach + 1)
+        x0 = max(0, int(pts[:, 0].min()) - reach); x1 = min(self.w, int(pts[:, 0].max()) + reach + 1)
+        if y1 <= y0 or x1 <= x0:
+            return self
+        py, px = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+        best = np.full(py.shape, np.inf, np.float32)
+        along = np.zeros_like(best); side = np.zeros_like(best)
+        for j in range(len(seg)):
+            ax, ay = pts[j]; dx, dy = (pts[j + 1] - pts[j]) / seg[j]
+            rx, ry = px - ax, py - ay
+            u = rx * dx + ry * dy
+            uc = np.clip(u, 0.0, seg[j])
+            # past the very start or end the distance keeps counting along
+            # the line, so the caps come out square, not round
+            if j == 0:
+                uc = np.minimum(uc, np.maximum(u, -w))
+            if j == len(seg) - 1:
+                uc = np.maximum(uc, np.minimum(u, seg[j] + w))
+            perp = rx * (-dy) + ry * dx
+            off = np.abs(u - uc)
+            d = np.hypot(perp, off)
+            better = d < best
+            best = np.where(better, d, best)
+            along = np.where(better, cum[j] + uc, along)
+            side = np.where(better, perp, side)
+        t = np.clip(along / max(total, 1e-3), -0.2, 1.2)
+        tc = np.clip(t, 0.0, 1.0)
+        # width along the stroke: pressed down at once, then lifting off
+        prof = np.where(tc < press, 0.88 + 0.12 * tc / max(press, 1e-3), 1.0 - taper * np.clip((tc - press) / max(1 - press, 1e-3), 0, 1) ** 1.6)
+        ph = r.uniform(0, 50, 3)
+        edge = 1.0 + ragged * (np.sin(tc * 23.0 + ph[0]) * 0.5 + np.sin(tc * 61.0 + ph[1]) * 0.35 + np.sin(np.sign(side) * 3 + tc * 7 + ph[2]) * 0.3)
+        hw = w * prof * edge
+        s = side / np.maximum(hw, 1e-3)
+        inside = np.clip(hw - np.abs(side) + 0.5, 0.0, 1.0)            # one pixel of antialias, no feather
+        # square start: cut off before t=0 with the same one-pixel edge
+        inside *= np.clip((along + 0.5) / 1.0, 0.0, 1.0) if press > 0 else 1.0
+        inside *= np.clip((total + w * 0.25 - along) / 1.5, 0.0, 1.0)
+        # bristles: a fixed loading per hair across the width, smoothed
+        k = max(2, int(streaks))
+        hairs = r.uniform(0.0, 1.0, k * 3)
+        pos = (np.clip(s, -1, 1) + 1) * 0.5 * (len(hairs) - 1)
+        i0 = np.floor(pos).astype(int); f = pos - i0
+        i1 = np.minimum(i0 + 1, len(hairs) - 1)
+        hair = hairs[i0] * (1 - f) + hairs[i1] * f
+        # the tail runs out: the cutoff climbs with t, and the outer hairs go first
+        cut = dry * np.clip((tc - 0.35) / 0.65, 0.0, 1.0) ** 1.3 * (1.0 + 0.4 * np.abs(s))
+        # skips run ALONG each hair (a hair touches down, lifts, touches again),
+        # never as per-pixel salt, which reads as spray paint
+        hph = r.uniform(0, 2 * np.pi, len(hairs)); hfq = r.uniform(0.6, 1.6, len(hairs))
+        ph_ = hph[i0] * (1 - f) + hph[i1] * f; fq = hfq[i0] * (1 - f) + hfq[i1] * f
+        grain = (0.5 + 0.5 * np.sin(along * fq / (0.9 * w) + ph_)).astype(np.float32) * 0.22
+        cover = np.clip((hair * 0.82 + grain - cut + 0.18) / 0.18, 0.0, 1.0)
+        a = (inside * cover * float(opacity)).astype(np.float32)
+        a = self._apply_tooth(a, y0, y1, x0, x1, self._load(load, opacity) * (1.0 - 0.5 * dry * tc))
+        a[a < 0.004] = 0.0
+        if not a.any():
+            return self
+        col = np.asarray(colour(0.0) if callable(colour) else colour, np.float32)
+        streak_tone = (hair - 0.5)[..., None] * 0.04                   # the hairs aren't quite one colour either
+        tile = self.rgb[y0:y1, x0:x1]
+        self.rgb[y0:y1, x0:x1] = tile * (1.0 - a[..., None]) + np.clip(col * (1 + streak_tone), 0, None) * a[..., None]
+        dt = self.depth[y0:y1, x0:x1]
+        self.depth[y0:y1, x0:x1] = np.where(a > 0.35, np.minimum(dt, float(depth)), dt)
+        body = (1.0 - tc * 0.6) * (0.7 + 0.3 * hair) + ridge * np.clip(np.abs(s) - 0.65, 0, 0.35) / 0.35
+        self.height[y0:y1, x0:x1] += a * body * self.thickness
+        return self
+
     def path(self, fn, n=200, **kw):
         """A parametric mark: fn(t) -> (x, y) for t in [0, 1]. Curves without control points."""
         ts = np.linspace(0.0, 1.0, int(n))
@@ -773,7 +879,7 @@ class Canvas:
 
     def repaint(self, ref, R, thresh=0.04, maxlen=6, allow=None, opacity=0.92,
                 hardness=0.45, width=0.6, jitter=0.6, depth=0.5, seed=0,
-                angle=None, pull=0.0, stretch=None):
+                angle=None, pull=0.0, stretch=None, mark="round", dry=0.5):
         """
         Paint a reference INTO the canvas with brushstrokes of radius ~R, only
         where the canvas still disagrees with it (Hertzmann 1998, 'Painterly
@@ -816,6 +922,12 @@ class Canvas:
         that keeps foliage short. The hand yields at edges: pull falls off
         where the value changes by more than ~0.08 across one brush width,
         or a vertical wall stroke drags the clock face down into the stucco.
+
+        THE MARK. `mark="round"` lays each stroke as soft round dabs (the
+        original, and what a blind reader called 'Kuwahara'). `mark="flat"`
+        lays it with flat(): square pressed start, tapering body, a tail that
+        runs dry along the hairs (`dry`), height ridged at the edges. `hardness`
+        only applies to round.
         """
         rng = np.random.default_rng(seed)
         ref = np.asarray(ref, np.float32)
@@ -842,7 +954,11 @@ class Canvas:
                 a = float(allow[y0:y0 + step, x0:x0 + step].mean())
                 if e.mean() * (0.15 + 0.85 * a) < thresh or rng.random() > a + 0.05:
                     continue
-                j = np.unravel_index(np.argmax(e), e.shape)
+                # where the error is flat (a clear sky) argmax lands on the same
+                # corner of every cell and the strokes line up in a grid; a blind
+                # reader saw 'tile seams' (23 Oct). Noise of the error's own spread
+                # breaks the tie without moving a stroke off a real feature.
+                j = np.unravel_index(np.argmax(e + rng.random(e.shape) * (e.std() + 1e-3)), e.shape)
                 cells.append((y0 + j[0], x0 + j[1]))
         rng.shuffle(cells)
         for (y, x) in cells:
@@ -850,7 +966,9 @@ class Canvas:
             pts = [(float(x), float(y))]
             px, py = float(x), float(y)
             dx0 = dy0 = 0.0
-            for k in range(max(1, int(round(maxlen * float(stretch[y, x]))))):
+            # a flat mark shows its ends, so equal lengths lay courses like brickwork
+            vary = rng.uniform(0.55, 1.45) if mark == "flat" else 1.0
+            for k in range(max(1, int(round(maxlen * float(stretch[y, x]) * vary)))):
                 iy, ix = int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))
                 g0, g1 = gx[iy, ix], gy[iy, ix]
                 n = math.hypot(g0, g1)
@@ -884,8 +1002,12 @@ class Canvas:
                 pts.append((px, py))
             if len(pts) < 2:
                 pts.append((x + rng.normal() * jitter * R, y + rng.normal() * jitter * R))
-            self.stroke(pts, tuple(np.clip(col * (1 + rng.normal(0, 0.025, 3)), 0, None)),
-                        width=R * width, opacity=opacity, hardness=hardness, depth=depth)
+            c = tuple(np.clip(col * (1 + rng.normal(0, 0.025, 3)), 0, None))
+            if mark == "flat":
+                self.flat(pts, c, width=R * width * rng.uniform(0.85, 1.15), opacity=opacity,
+                          depth=depth, dry=dry, seed=int(rng.integers(1 << 30)))
+            else:
+                self.stroke(pts, c, width=R * width, opacity=opacity, hardness=hardness, depth=depth)
         return len(cells)
 
     def glow(self, x, y, radius, colour, depth=0.6, strength=1.0, falloff=2.0):
