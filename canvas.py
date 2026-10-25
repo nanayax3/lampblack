@@ -909,6 +909,14 @@ class Canvas:
         What works: paint the ground with its own strokes, call repaint with
         `allow` = the subject only, then put back whatever landed outside a
         slightly dilated subject mask (masking fluid), rgb and height both.
+        Two more things the ground needs: its own REFERENCE, with the subject
+        filled in from the ground around it (the blurred plate otherwise
+        carries the subject's colour a brush-width out, and the ground strokes
+        pick it up); and `allow` is soft. A cell with allow 0 still starts a
+        stroke about 5% of the time, so a pass over a reference that
+        disagrees hard with what is painted (black ground behind a yellow
+        subject) leaves scribbles across the subject. Masking fluid is the
+        only hard gate.
 
         REGIONS. One stroke schedule for the whole picture reads as a filter:
         the same blob everywhere. A painter changes hand by region, long and
