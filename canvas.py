@@ -48,6 +48,37 @@ def blur(a, r, n=3):
     return out
 
 
+def grow_mask(mask, px):
+    """Dilate a boolean mask by `px` (a square window of 2*px+1)."""
+    m = np.asarray(mask) > 0.5 if np.asarray(mask).dtype != bool else np.asarray(mask)
+    if px <= 0:
+        return m.copy()
+    from PIL import Image, ImageFilter
+    k = 2 * int(px) + 1
+    return np.asarray(Image.fromarray(m.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(k))) > 0
+
+
+def shrink_mask(mask, px):
+    """Erode a boolean mask by `px`."""
+    return ~grow_mask(~(np.asarray(mask) > 0.5), px)
+
+
+def fill_reference(ref, mask, grow=4, r=24):
+    """
+    A reference with the subject taken out: `mask` (dilated by `grow`) is
+    filled with the blurred surroundings. Paint the GROUND from this, not
+    from the plate. Ground strokes sample a blurred reference, and near the
+    subject the blurred plate still carries the subject's colour a brush
+    width out, so the ground picks it up and wraps the subject in its
+    colour. With the hole filled from outside, the ground only knows itself.
+    """
+    ref = np.asarray(ref, np.float32)
+    hole = grow_mask(mask, grow)
+    known = (~hole).astype(np.float32)
+    fill = blur(ref * known[..., None], r) / np.maximum(blur(known, r), 1e-4)[..., None]
+    return np.where(hole[..., None], fill, ref).astype(np.float32)
+
+
 class Canvas:
     def __init__(self, width, height, background=(0.0, 0.0, 0.0)):
         self.w, self.h = int(width), int(height)
@@ -142,6 +173,41 @@ class Canvas:
             yield self
         finally:
             self.bite = prev
+
+    @contextmanager
+    def masking(self, mask, grow=3, seam=0):
+        """
+        Masking fluid. Everything painted inside the block is kept only on
+        `mask` (dilated by `grow` px); outside it, rgb, height and depth go
+        back to how they were when the block opened.
+
+            with c.masking(fruit):
+                c.repaint(plate, 11, allow=fruit, ...)
+
+        `allow` in repaint() is soft (a cell with allow 0 still starts a
+        stroke ~5% of the time) and only gates where a stroke STARTS, so a
+        stroke can run a long way off the subject. This is the hard gate.
+        It works for any mark, not only repaint.
+
+        `seam` > 0 blurs the height in a band of that half-width at the
+        mask's edge on the way out. Without it the step between the masked
+        paint and the paint around it is a cliff in the height field, and
+        relight() draws it as an outline.
+
+        Typed out by hand in four paintings before it became a method.
+        """
+        m = grow_mask(mask, grow)
+        rgb, hgt, dep = self.rgb.copy(), self.height.copy(), self.depth.copy()
+        try:
+            yield self
+        finally:
+            out = ~m
+            self.rgb[out] = rgb[out]
+            self.height[out] = hgt[out]
+            self.depth[out] = dep[out]
+            if seam > 0:
+                band = grow_mask(m, 2 * seam + 1) & ~shrink_mask(m, 2 * seam + 1)
+                self.height[band] = blur(self.height, max(1, seam // 2 + 1))[band]
 
     def _apply_tooth(self, a, y0, y1, x0, x1, load):
         """
