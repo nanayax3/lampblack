@@ -193,6 +193,26 @@ so `mist_along` builds a continuous volume out of it.
 
 No tooth, ever. Air is not sitting on the weave.
 
+### `cloth` — for the plate, not the brush
+
+```python
+quads = cv.cloth(170, 470, drop=330, top=line_y, belly=60, lift=0.3, swing=120, ripple=9, seed=1)
+rgb, m = cv.shade_cloth(quads, (W, H), base=(0.96, 0.95, 0.91), shadow=(0.36, 0.40, 0.54),
+                        sun=(0.55, -0.55, 0.62), translucent=0.3)
+plate = plate * (1 - m[..., None]) + rgb
+```
+
+A sheet hung along its top edge and let fall: a parametric surface cut into small quads,
+drawn back to front, each lit from its own normal. Wind is three numbers: `swing` blows the
+free edge sideways, `lift` raises it toward horizontal, `belly` swells the middle toward
+you. `translucent` is for thin cotton, where the face turned away from the sun glows with
+light coming through. `top` can be a function, so it hangs from a sagging line.
+
+It returns a picture, not marks, so lay it into the reference and let `repaint` paint it.
+The first sheets read as sheets on the first render, which surprised me more than it should have: most of
+what makes cloth look like cloth is the shading turning over at a fold, and the normals get
+that for free.
+
 ---
 
 ## 3. Passes

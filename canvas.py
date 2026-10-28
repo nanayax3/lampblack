@@ -2628,3 +2628,89 @@ def tip_rake(hairs=6, thickness=0.10):
             out = np.maximum(out, np.clip((thickness - np.abs(v - y)) / (thickness * 0.6), 0, 1))
         return out * np.clip((1.0 - np.abs(u)) / 0.2, 0, 1)
     return f
+
+
+# ── cloth: a hung surface for the plate ─────────────────────────────────────
+#
+# Not a mark. A plate helper, like fill_reference: it gives back colour and
+# coverage to lay into a reference before repaint() goes over it. Written for
+# a washing line (27 Oct 2026) inside a painting and promoted the next night,
+# so a flag, a curtain, a sail or a peel can hang the same way.
+
+def cloth(x0, x1, drop, top=0.0, belly=0.0, lift=0.0, swing=0.0, ripple=0.0,
+          seed=0, nu=70, nv=46):
+    """
+    A piece of cloth hung along its top edge from x0 to x1 and let fall by
+    `drop` px. u runs along the top edge, v down the fall.
+
+    top:    the y of the hanging edge, a number or fn(x) -> y (a sagging line).
+    belly:  how far the middle swells toward the viewer, in px of z.
+    lift:   0..1, how far the wind raises the free edge toward horizontal.
+    swing:  px the free edge is blown sideways (positive = to the right).
+    ripple: px of travelling waves, growing toward the free edge.
+
+    Returns a list of quads (z, polygon, unit normal, u, v), for shade_cloth().
+    z is toward the viewer; the normal's z < 0 means we see the back face.
+    """
+    rng = np.random.default_rng(seed)
+    u = np.linspace(0, 1, nu + 1)[:, None]
+    v = np.linspace(0, 1, nv + 1)[None, :]
+    ph = rng.uniform(0, 6.28, 3)
+    xu = x0 + (x1 - x0) * u
+    y0 = top(xu) if callable(top) else np.full_like(xu, float(top))
+    X = xu + swing * v ** 1.6 * (1 + 0.25 * np.sin(u * 3 + ph[0]))
+    Y = y0 + drop * v * (1 - lift * v ** 1.3) + 8 * np.sin(u * 7 + ph[1]) * v ** 2
+    Z = belly * np.sin(np.pi * u) ** 0.8 * np.sin(np.pi * np.clip(v * 0.85 + 0.1, 0, 1)) \
+        + ripple * np.sin(u * 9 + v * 4 + ph[2]) * v ** 1.2 + ripple * 0.5 * np.sin(u * 17 - v * 6) * v
+    P = np.stack(np.broadcast_arrays(X, Y, Z), -1)          # (nu+1, nv+1, 3)
+    a = P[1:, :-1] - P[:-1, :-1]
+    b = P[:-1, 1:] - P[:-1, :-1]
+    n = np.cross(a, b)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True) + 1e-9
+    zc = (P[:-1, :-1, 2] + P[1:, 1:, 2]) / 2
+    quads = []
+    for i in range(nu):
+        for j in range(nv):
+            p = [(X[i, j], Y[i, j]), (X[i + 1, j], Y[i + 1, j]),
+                 (X[i + 1, j + 1], Y[i + 1, j + 1]), (X[i, j + 1], Y[i, j + 1])]
+            quads.append((zc[i, j], p, n[i, j], (i + 0.5) / nu, (j + 0.5) / nv))
+    return quads
+
+
+def shade_cloth(quads, size, base, shadow, sun=(0.55, -0.55, 0.62),
+                translucent=0.0, sky=(0.05, 0.08, 0.14), ss=3, extra=None):
+    """
+    Draw cloth quads back to front, each shaded from its own normal.
+    Returns (rgb, coverage) at `size` = (width, height); rgb is premultiplied,
+    so lay it with plate * (1 - m) + rgb.
+
+    base / shadow: the cloth's lit and unlit colours.
+    sun:           direction TO the light (x right, y down, z toward us).
+    translucent:   thin cloth: the face turned from the sun glows with light
+                   coming through it (cotton ~0.3, voile higher, canvas 0).
+    sky:           a cool fill added on faces that tip upward.
+    extra:         fn(draw_rgb, draw_mask, ss) for things that sit on the
+                   cloth and must cover it (pegs, rings, a hem).
+    """
+    from PIL import Image, ImageDraw
+    W, H = size
+    sun = np.asarray(sun, np.float32); sun = sun / np.linalg.norm(sun)
+    base, shadow, sky = (np.asarray(c_, np.float32) for c_ in (base, shadow, sky))
+    im = Image.new("RGB", (W * ss, H * ss), 0)
+    mk = Image.new("L", (W * ss, H * ss), 0)
+    dr, dm = ImageDraw.Draw(im), ImageDraw.Draw(mk)
+    for z, p, n, u, v in sorted(quads, key=lambda q: q[0]):
+        nn = -n if n[2] < 0 else n           # light the face we can see
+        d = float(nn @ sun)
+        lam = max(d, 0.0)
+        glow = translucent * max(-d, 0.0)
+        up = 0.18 * max(-float(nn[1]), 0.0)
+        col = np.clip(shadow + (base - shadow) * lam ** 0.9 + base * glow * 0.5 + sky * up, 0, 1)
+        poly = [(x * ss, y * ss) for x, y in p]
+        dr.polygon(poly, fill=tuple(int(c_ * 255) for c_ in col))
+        dm.polygon(poly, fill=255)
+    if extra is not None:
+        extra(dr, dm, ss)
+    rgb = np.asarray(im.resize((W, H), Image.BOX), np.float32) / 255.0
+    m = np.asarray(mk.resize((W, H), Image.BOX), np.float32) / 255.0
+    return rgb, m
