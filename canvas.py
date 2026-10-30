@@ -946,7 +946,7 @@ class Canvas:
     def repaint(self, ref, R, thresh=0.04, maxlen=6, allow=None, opacity=0.92,
                 hardness=0.45, width=0.6, jitter=0.6, depth=0.5, seed=0,
                 angle=None, pull=0.0, stretch=None, mark="round", dry=0.5,
-                minlen=0):
+                minlen=0, chroma=0.025, value=0.0):
         """
         Paint a reference INTO the canvas with brushstrokes of radius ~R, only
         where the canvas still disagrees with it (Hertzmann 1998, 'Painterly
@@ -1097,7 +1097,14 @@ class Canvas:
                 pts.append((px, py))
             if len(pts) < 2:
                 pts.append((x + rng.normal() * jitter * R, y + rng.normal() * jitter * R))
-            c = tuple(np.clip(col * (1 + rng.normal(0, 0.025, 3)), 0, None))
+            # chroma: per-channel noise, so each stroke drifts in hue. On pale
+            # neutrals (overcast sky, grey water) 0.025 reads as lilac and
+            # green stripes; lower it there and use `value` (one factor for
+            # all three channels) to keep the strokes from going flat.
+            k = rng.normal(0, chroma, 3) if chroma else 0.0
+            if value:
+                k = k + rng.normal(0, value)
+            c = tuple(np.clip(col * (1 + k), 0, None))
             if mark == "flat":
                 self.flat(pts, c, width=R * width * rng.uniform(0.85, 1.15), opacity=opacity,
                           depth=depth, dry=dry, seed=int(rng.integers(1 << 30)))
