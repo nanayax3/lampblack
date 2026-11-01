@@ -369,6 +369,37 @@ makes it.
 
 ---
 
+## 4b½. Hands
+
+`hand.py` builds hands as height fields seen from above, so they can be lit like
+anything else on the canvas. Written 1 Nov 2026, after two paintings had each copied
+the same capsule code by hand.
+
+```python
+from hand import Hands
+hs = Hands(W, H)
+f  = hs.finger((x, y), ang=-5, segs=[86, 38, 20], rads=[24, 22, 20, 18], bends=[-3, -2])
+hh = hs.build(fingers, thumb, quad=[wristL, wristR, little_knuckle, index_knuckle],
+              R=36, wrist=(p0, p1, 72), thenar=(p, 40, 32), tendons=4.0)
+col, n = hs.shade(hh, lit=skin, dark=shadow, L=light, lamp=lamp, fill=fill)
+col = hs.nails(col, n, fingers + [thumb], tint, light, lamp)
+col = hs.creases(col, fingers, 0.2)
+hh, col = hs.ring(hh, col, n, fingers[2], 0.3, metal=(0.78, 0.78, 0.8), stone=((0.8, 0.85, 0.95), 9))
+```
+
+The back of the hand is a slab (a rounded convex quad with a slight dome), not a paddle
+and not a balloon. Fingers are tapered capsules with a waist between joints. Knuckles
+are low swellings, not balls. The thenar pad buries the thumb's root, and the tendons
+fan from each knuckle toward the wrist. Shading wraps the light and warms the
+terminator, because skin lets a little light through, so the edge of the light goes red,
+not grey. Fingers that curl away from the viewer still need doing by hand in the
+painting: darken the last segment as it turns.
+
+What it can't do yet: a hand that wraps round something. Every pose is flat to the
+ground plane, so a grip reads as a hand resting.
+
+---
+
 ## 4c. Deadpan
 
 *(Published 26 September 2026, after he reread it in daylight and said yes. MIT, as-is, his name on the commit.)*
