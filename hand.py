@@ -418,7 +418,7 @@ class Hand3D:
         """at=(x, y, z): where the wrist centre sits on screen and how high.
         yaw rotates on the table (degrees, + clockwise on screen), roll
         turns the hand about its own long axis (+ lifts the thumb side),
-        pitch tips the fingers down (+) or up. Anything below z=0 is buried
+        pitch tips the fingers down (+) or up (fixed 2 Nov: it was backwards). Anything below z=0 is buried
         (sink pushes it further in). rest=True ignores at[2] and drops the
         hand until its lowest point touches the table. anchor: the local
         point (unscaled, right-hand frame) that lands on `at`; the default
@@ -426,7 +426,7 @@ class Hand3D:
         skin there, which is what you want when the palm is against
         something."""
         C, R, part, D, tipw = self._spheres()
-        Rm = _rz(yaw) @ _rx(-pitch) @ _ry(roll * self.side)
+        Rm = _rz(yaw) @ _rx(pitch) @ _ry(roll * self.side)
         a = np.asarray(anchor, np.float32) * self.s; a[0] *= self.side
         C = C @ Rm.T + (np.asarray(at, np.float32) - Rm @ a)
         D = D @ Rm.T
@@ -462,5 +462,5 @@ class Hand3D:
 
     def palm_normal(self, yaw=0.0, roll=0.0, pitch=0.0):
         """world direction the palm faces after the same rotation render() uses."""
-        Rm = _rz(yaw) @ _rx(-pitch) @ _ry(roll * self.side)
+        Rm = _rz(yaw) @ _rx(pitch) @ _ry(roll * self.side)
         return Rm @ np.array([0, 0, -1], np.float32)
