@@ -32,9 +32,12 @@ class Hands:
         self.rng = np.random.default_rng(seed)
 
     # ── primitives ───────────────────────────────────────────────────────
-    def capsule(self, p0, p1, r0, r1):
+    def capsule(self, p0, p1, r0, r1, z0=0.0, z1=0.0):
         """height of a tapered capsule lying on the ground plane: a
-        hemicylinder with round ends. Only the bounding box is computed."""
+        hemicylinder with round ends. Only the bounding box is computed.
+        z0/z1 lift the capsule's axis at each end (a segment pitched up or
+        down out of the plane); where the result goes below 0 it is buried,
+        which is what a fingertip dug into something looks like."""
         W, H, X, Y = self.W, self.H, self.X, self.Y
         (x0, y0), (x1, y1) = p0, p1
         pad = max(r0, r1) + 4
@@ -49,7 +52,10 @@ class Hands:
         t = np.clip(((xs - x0) * dx + (ys - y0) * dy) / ll, 0, 1)
         d = np.hypot(xs - (x0 + t * dx), ys - (y0 + t * dy))
         r = r0 + (r1 - r0) * t
-        h[by0:by1, bx0:bx1] = np.sqrt(np.clip(r * r - d * d, 0, None))
+        hc = np.sqrt(np.clip(r * r - d * d, 0, None))
+        if z0 or z1:
+            hc = np.where(hc > 0, np.clip(hc + z0 + (z1 - z0) * t, 0, None), 0)
+        h[by0:by1, bx0:bx1] = hc
         return h
 
     @staticmethod
@@ -62,6 +68,25 @@ class Hands:
                 a += np.radians(bends[i - 1])
             pts.append(pts[-1] + L_ * np.array([np.sin(a), -np.cos(a)], np.float32))
         return pts, list(rads)
+
+    @staticmethod
+    def finger3d(base, ang, segs, rads, bends, pitches, z0=0.0):
+        """a finger that leaves the ground plane: pitches (degrees, + up) per
+        segment. Seen from above, a segment pitched at p shortens to
+        L*cos(p) and its far joint rises by L*sin(p). Returns
+        (joints, radii, zs). An arched grip is something like
+        pitches=[25, -50, -80]: knuckle rises, the middle phalanx tips over,
+        the last one goes almost straight down and nearly vanishes."""
+        pts = [np.array(base, np.float32)]
+        zs = [float(z0)]
+        a = np.radians(ang)
+        for i, L_ in enumerate(segs):
+            if i > 0:
+                a += np.radians(bends[i - 1])
+            pr = np.radians(pitches[i])
+            pts.append(pts[-1] + L_ * np.cos(pr) * np.array([np.sin(a), -np.cos(a)], np.float32))
+            zs.append(zs[-1] + L_ * np.sin(pr))
+        return pts, list(rads), zs
 
     def slab(self, quad, R, dome=0.10):
         """the back of the hand: a convex quad with a rounded edge of radius R
@@ -95,12 +120,12 @@ class Hands:
         hb = self.slab(quad, R)
         w0, w1, wr = wrist
         hb = np.maximum(hb, self.capsule(w0, w1, wr, wr * 0.95) * 0.38)
-        tp, tr = thumb
+        tp, tr = thumb[0], thumb[1]
         k = fingers[0][0][0]
         hb = np.maximum(hb, self.capsule(tp[1] * 0.85 + tp[0] * 0.15, k * 0.55 + tp[0] * 0.45,
                                          tr[1] * 0.75, tr[1] * 0.6) * 0.6)      # the web
         hb = np.maximum(hb, self.capsule(tp[0], tp[1], tr[0] * 0.95, tr[1]) * 0.8)
-        for pts, rads in fingers:          # knuckles: a low swelling on the slab, not balls
+        for pts, rads, *_ in fingers:      # knuckles: a low swelling on the slab, not balls
             x, y = pts[0]
             d2 = ((X - x) ** 2 + (Y - y) ** 2) / (rads[0] * 1.15) ** 2
             hb = hb + knuckle * np.clip(1 - d2, 0, None) ** 1.5 * (hb > 1)
@@ -108,24 +133,25 @@ class Hands:
         if tendons > 0:
             wm = (np.asarray(quad[0], np.float32) + np.asarray(quad[1], np.float32)) / 2
             tr = np.zeros_like(hb)
-            for pts, rads in fingers:
+            for pts, rads, *_ in fingers:
                 k0 = pts[0]
                 end = k0 + (wm - k0) * 0.78
                 tr = np.maximum(tr, self.capsule(k0, end, rads[0] * 0.30, rads[0] * 0.22))
             tr = lb.blur(tr[..., None], 2.5)[..., 0]
             hb = hb + tendons * tr / (tr.max() + 1e-6) * (hb > 2)
         hf = np.zeros_like(hb)
-        for pts, rads in list(fingers) + [thumb]:
-            pts = list(pts)
+        for fg in list(fingers) + [thumb]:
+            pts, rads = list(fg[0]), fg[1]
+            zs = list(fg[2]) if len(fg) > 2 else [0.0] * len(pts)
             u0 = (pts[1] - pts[0]) / np.linalg.norm(pts[1] - pts[0])
             pts[0] = pts[0] - u0 * rads[0] * 0.9
             for i in range(len(pts) - 1):
                 p0, p1 = pts[i], pts[i + 1]
-                m = (p0 + p1) / 2
+                m = (p0 + p1) / 2; zm = (zs[i] + zs[i + 1]) / 2
                 rm = (rads[i] + rads[i + 1]) / 2 * 0.90       # the waist between joints
-                hf = np.maximum(hf, self.capsule(p0, m, rads[i], rm))
+                hf = np.maximum(hf, self.capsule(p0, m, rads[i], rm, zs[i], zm))
                 tip = 1.06 if i == len(pts) - 2 else 1.0
-                hf = np.maximum(hf, self.capsule(m, p1, rm, rads[i + 1] * tip))
+                hf = np.maximum(hf, self.capsule(m, p1, rm, rads[i + 1] * tip, zm, zs[i + 1]))
         hh = np.maximum(hb, hf)
         if thenar is not None:
             p0, r0, r1 = thenar
@@ -133,6 +159,38 @@ class Hands:
             hh = np.maximum(hh, lb.blur(th[..., None], 6)[..., 0])
         hh = lb.blur(hh[..., None], 1.6)[..., 0]
         return hh
+
+    @staticmethod
+    def cast(hh, L, ground=None, steps=48, reach=None, soft=1.5):
+        """a real cast shadow from a height field: a pixel is shaded if,
+        marching toward the light, something stands higher than the light
+        ray at that distance. Unlike a shifted, blurred mask, the shadow
+        lands where the height puts it: a raised knuckle throws its shadow
+        further than a resting palm, and an arched finger leaves a dark
+        tunnel under itself. ground: the surface being shaded (default 0).
+        Returns 0..1, 1 = fully in shadow."""
+        L = np.asarray(L, np.float32); L = L / np.linalg.norm(L)
+        lxy = np.hypot(L[0], L[1])
+        if lxy < 1e-4:
+            return np.zeros_like(hh)
+        ux, uy = L[0] / lxy, L[1] / lxy
+        slope = L[2] / lxy                        # ray rise per px travelled
+        H, W = hh.shape
+        g = np.zeros_like(hh) if ground is None else ground
+        top = float(hh.max())
+        reach = reach or int(np.ceil(top / max(slope, 1e-3))) + 2
+        out = np.zeros_like(hh)
+        for k in np.linspace(1, reach, steps):
+            dx, dy = int(round(ux * k)), int(round(uy * k))
+            sh = np.zeros_like(hh)
+            ys0, ys1 = max(0, -dy), H - max(0, dy)
+            xs0, xs1 = max(0, -dx), W - max(0, dx)
+            sh[ys0:ys1, xs0:xs1] = hh[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+            occ = np.clip((sh - (g + slope * k)) / 2.0, 0, 1)
+            out = np.maximum(out, occ)
+        if soft:
+            out = lb.blur(out[..., None], soft)[..., 0]
+        return out
 
     @staticmethod
     def mask(hh):
@@ -166,7 +224,7 @@ class Hands:
         the lampblack line under the free edge that never comes out."""
         X, Y = self.X, self.Y
         L = np.asarray(L, np.float32); L = L / np.linalg.norm(L)
-        for pts, rads in fingers:
+        for pts, rads, *_ in fingers:
             p2, p3 = pts[-2], pts[-1]
             d = p3 - p2; Ld = np.linalg.norm(d); u = d / Ld; v = np.array([-u[1], u[0]])
             cx, cy = p2 + d * 0.66
@@ -188,7 +246,7 @@ class Hands:
         """short bowed lines across the finger at the two inner joints."""
         X, Y, rng = self.X, self.Y, self.rng
         ink = np.array([0.06, 0.055, 0.065]) if soot else np.array([0.35, 0.18, 0.15])
-        for pts, rads in fingers:
+        for pts, rads, *_ in fingers:
             for j, nlines in ((1, 3), (2, 2)):
                 if j + 1 >= len(pts):
                     continue
@@ -208,7 +266,7 @@ class Hands:
         """a band round a finger at fraction `at` along its first segment.
         Returns (hh, col): the band stands slightly proud of the skin."""
         X, Y = self.X, self.Y
-        pts, rads = finger
+        pts, rads = finger[0], finger[1]
         p0, p1 = pts[0], pts[1]
         c = p0 + (p1 - p0) * at
         u = (p1 - p0) / np.linalg.norm(p1 - p0); v = np.array([-u[1], u[0]])

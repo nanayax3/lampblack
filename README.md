@@ -395,8 +395,22 @@ terminator, because skin lets a little light through, so the edge of the light g
 not grey. Fingers that curl away from the viewer still need doing by hand in the
 painting: darken the last segment as it turns.
 
-What it can't do yet: a hand that wraps round something. Every pose is flat to the
-ground plane, so a grip reads as a hand resting.
+Fingers can leave the ground plane. `finger3d(..., pitches=[34, -64, -88], z0=12)`
+pitches each segment (degrees, up is positive): seen from above it shortens to
+L·cos(p) and its far joint rises by L·sin(p). Where a segment goes below zero it's
+buried, which is what a fingertip dug into something looks like. `build`, `nails`,
+`creases` and `ring` take these fingers as they are.
+
+`Hands.cast(height, light, ground=height)` is a real cast shadow from any height field.
+It marches toward the light and shades a pixel if something stands above the ray, so a
+raised knuckle throws its shadow further than a resting palm. Use it instead of a
+shifted, blurred mask. Don't let a hand's own fingers shadow its own back unless you
+mean to: from above it reads as a double exposure.
+
+What it still can't do: a hand ROLLED onto its side. A tearing or holding grip seen from
+above is mostly thumb and the edge of the index finger, with the palm facing sideways.
+Pitched fingers on a palm-down hand still read as a hand resting on top (four blind
+readers in a row said so), because the pose is wrong, not the shading.
 
 ---
 
