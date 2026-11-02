@@ -290,3 +290,177 @@ class Hands:
             col = col * (1 - sm[..., None]) + sc * np.asarray(lamp) * sm[..., None]
             hh = hh + sm * lift * 1.3
         return hh, col
+
+
+# ── hands in three dimensions ────────────────────────────────────────────
+def _rx(d):
+    a = np.radians(d); c, s = np.cos(a), np.sin(a)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], np.float32)
+
+
+def _ry(d):
+    a = np.radians(d); c, s = np.cos(a), np.sin(a)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], np.float32)
+
+
+def _rz(d):
+    a = np.radians(d); c, s = np.cos(a), np.sin(a)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], np.float32)
+
+
+class Hand3D:
+    """a hand built as real 3D bones (spheres swept along segments), so it
+    can ROLL about its own long axis, which a height field built flat on the
+    ground cannot. Seen from above, a hand rolled ~90 degrees shows the
+    thumb on top and the edge of the index finger; the palm turns sideways
+    and the little finger goes underneath. That's the pose for tearing,
+    holding a cup, gripping anything from the side.
+
+    Local frame (right hand, back of the hand up, unrolled): fingers point
+    -y (screen up at yaw 0), index on -x, little on +x, thumb further -x,
+    z out of the back of the hand. side=-1 mirrors it into a left hand.
+
+        h3 = Hand3D(scale=1.0, side=1)
+        h3.finger(i, curl=[20, 40, 30], splay=-4)     # flexion per joint, + toward palm
+        h3.thumb(out=40, down=30, curl=[10, 20])
+        hh, part, nail = h3.render(W, H, at=(x, y, z), yaw=0, roll=80, pitch=0)
+
+    render() returns the height field (px), a part map (-1 none, 0 arm,
+    1 palm, 2..5 fingers index..little, 6 thumb) and a nail mask (0..1)
+    worked out from the real 3D surface normal, so nails appear only where
+    the back of the fingertip actually faces the viewer.
+    """
+    PALM = (0, -50, -13)
+    KNUCKLES = [(-30, -92), (-10, -96), (10, -93), (28, -86)]   # index..little, wrist at (0, 0)
+    SEGS = [(44, 26, 20), (48, 30, 21), (46, 28, 20), (36, 22, 18)]
+    RADS = [(10.5, 9.5, 8.5, 7.5), (11, 10, 9, 8), (10.5, 9.5, 8.5, 7.5), (9, 8, 7.5, 6.5)]
+
+    def __init__(self, scale=1.0, side=1, palm_half=13.0, arm=(150, 25, 21)):
+        self.s, self.side = float(scale), side
+        self.palm_half = palm_half
+        self.arm = arm
+        self.curls = [[8, 10, 6]] * 4
+        self.splays = [-6, -2, 2, 7]
+        self.th = dict(out=38, down=28, curl=[8, 14], segs=(34, 30, 24), rads=(13, 11, 9.5, 8.5))
+
+    def finger(self, i, curl=None, splay=None):
+        if curl is not None:
+            self.curls[i] = list(curl)
+        if splay is not None:
+            self.splays[i] = splay
+        return self
+
+    def thumb(self, **kw):
+        self.th.update(kw)
+        return self
+
+    # bones in the local frame: list of (p0, p1, r0, r1, part, dorsal, is_tip)
+    def _bones(self):
+        B = []
+        P = lambda x, y, z=0.0: np.array([x, y, z], np.float32)
+        for i, (kx, ky) in enumerate(self.KNUCKLES):
+            p = P(kx, ky, 1.5)
+            Rm = _rz(self.splays[i])
+            for j, (L_, curl) in enumerate(zip(self.SEGS[i], self.curls[i])):
+                Rm = Rm @ _rx(curl)                  # flex: tips go toward the palm (-z)
+                d = Rm @ P(0, -1, 0)
+                dors = Rm @ P(0, 0, 1)
+                q = p + d * L_
+                B.append((p, q, self.RADS[i][j], self.RADS[i][j + 1], 2 + i, dors, j == 2))
+                p = q
+        t = self.th
+        p = P(-30, -28, -7)
+        Rm = _rz(-t['out']) @ _rx(t['down'])
+        segs, rads = t['segs'], t['rads']
+        for j, L_ in enumerate(segs):
+            if j > 0:
+                Rm = Rm @ _rz(t['curl'][j - 1] * 0.5) @ _rx(t['curl'][j - 1])
+            d = Rm @ P(0, -1, 0)
+            dors = Rm @ P(0.35, 0, 1); dors /= np.linalg.norm(dors)
+            q = p + d * L_
+            B.append((p, q, rads[j] * (1.25 if j == 0 else 1.0), rads[j + 1], 6, dors, j == len(segs) - 1))
+            p = q
+        L_, r0, r1 = self.arm
+        B.append((P(0, 6, -2), P(0, L_, -6), r0, r1, 0, P(0, 0, 1), False))
+        return B
+
+    def _spheres(self):
+        C, R, part, dors, tipw = [], [], [], [], []
+        for p0, p1, r0, r1, pt, ds, tip in self._bones():
+            n = max(2, int(np.linalg.norm(p1 - p0) / (min(r0, r1) * 0.12)) + 1)
+            for t in np.linspace(0, 1, n):
+                C.append(p0 + (p1 - p0) * t); R.append(r0 + (r1 - r0) * t)
+                part.append(pt); dors.append(ds); tipw.append(t if tip else -1.0)
+        # the palm: a slab swept between the wrist and the knuckles,
+        # thinning toward the knuckles, a little higher across the middle
+        ph = self.palm_half
+        kx = [k[0] for k in self.KNUCKLES]; ky = [k[1] for k in self.KNUCKLES]
+        for v in np.linspace(0, 1, 26):              # 0 wrist -> 1 knuckles
+            xl = -24 + (kx[0] - 2 + 24) * v; xr = 22 + (kx[-1] + 2 - 22) * v
+            yk = np.interp(np.linspace(0, 1, 2), [0, 1], [ky[0], ky[-1]])
+            for u in np.linspace(0, 1, 18):
+                x = xl + (xr - xl) * u
+                yt = np.interp(u, [0, 1 / 3, 2 / 3, 1], ky)
+                y = -2 + (yt + 2) * v
+                dome = 3.0 * np.sin(np.pi * u) * np.sin(np.pi * min(1, v * 1.2))
+                r = ph * (1 - 0.18 * v)
+                C.append(np.array([x, y, dome - 1.0], np.float32)); R.append(r)
+                part.append(1); dors.append(np.array([0, 0, 1], np.float32)); tipw.append(-1.0)
+        # the thenar: the fat of the thumb running back into the heel, palm side
+        for t in np.linspace(0, 1, 10):
+            C.append(np.array([-26 + 2 * t, -8 - 22 * t, -9], np.float32)); R.append(15 - 2 * t)
+            part.append(6); dors.append(np.array([0, 0, 1], np.float32)); tipw.append(-1.0)
+        C = np.array(C, np.float32); C[:, 0] *= self.side
+        D = np.array(dors, np.float32); D[:, 0] *= self.side
+        return C * self.s, np.array(R, np.float32) * self.s, np.array(part), D, np.array(tipw, np.float32)
+
+    def render(self, W, H, at, yaw=0.0, roll=0.0, pitch=0.0, sink=0.0, rest=False, anchor=(0, 0, 0)):
+        """at=(x, y, z): where the wrist centre sits on screen and how high.
+        yaw rotates on the table (degrees, + clockwise on screen), roll
+        turns the hand about its own long axis (+ lifts the thumb side),
+        pitch tips the fingers down (+) or up. Anything below z=0 is buried
+        (sink pushes it further in). rest=True ignores at[2] and drops the
+        hand until its lowest point touches the table. anchor: the local
+        point (unscaled, right-hand frame) that lands on `at`; the default
+        is the wrist. PALM = (0, -50, -13) puts the middle of the palm's
+        skin there, which is what you want when the palm is against
+        something."""
+        C, R, part, D, tipw = self._spheres()
+        Rm = _rz(yaw) @ _rx(-pitch) @ _ry(roll * self.side)
+        a = np.asarray(anchor, np.float32) * self.s; a[0] *= self.side
+        C = C @ Rm.T + (np.asarray(at, np.float32) - Rm @ a)
+        D = D @ Rm.T
+        if rest:
+            C[:, 2] -= (C[:, 2] - R).min()
+        C[:, 2] -= sink
+        Y_, X_ = np.mgrid[0:H, 0:W].astype(np.float32)
+        hh = np.full((H, W), -1e9, np.float32)
+        win = np.full((H, W), -1, np.int32)
+        for k in np.argsort(C[:, 2]):
+            cx, cy, cz = C[k]; r = R[k]
+            x0, x1 = int(max(0, cx - r - 1)), int(min(W, cx + r + 2))
+            y0, y1 = int(max(0, cy - r - 1)), int(min(H, cy + r + 2))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            d2 = (X_[y0:y1, x0:x1] - cx) ** 2 + (Y_[y0:y1, x0:x1] - cy) ** 2
+            top = np.where(d2 < r * r, cz + np.sqrt(np.clip(r * r - d2, 0, None)), -1e9)
+            sub = hh[y0:y1, x0:x1]
+            better = top > sub
+            sub[better] = top[better]
+            win[y0:y1, x0:x1][better] = k
+        vis = (win >= 0) & (hh > 0)
+        hh = np.where(vis, hh, 0).astype(np.float32)
+        partmap = np.where(vis, part[np.clip(win, 0, None)], -1)
+        # nails: the winning sphere's surface normal against its bone's dorsal axis
+        k = np.clip(win, 0, None)
+        nx = (X_ - C[k, 0]) / R[k]; ny = (Y_ - C[k, 1]) / R[k]; nz = (hh - C[k, 2]) / R[k]
+        dd = nx * D[k, 0] + ny * D[k, 1] + nz * D[k, 2]
+        tw = tipw[k]
+        nail = np.clip((dd - 0.55) * 5, 0, 1) * np.clip((tw - 0.30) * 5, 0, 1) * np.clip((0.97 - tw) * 12, 0, 1) * vis
+        hh = lb.blur(hh[..., None], 1.4)[..., 0] * (lb.blur(vis.astype(np.float32)[..., None], 0.8)[..., 0] > 0.02)
+        return hh, partmap, nail.astype(np.float32)
+
+    def palm_normal(self, yaw=0.0, roll=0.0, pitch=0.0):
+        """world direction the palm faces after the same rotation render() uses."""
+        Rm = _rz(yaw) @ _rx(-pitch) @ _ry(roll * self.side)
+        return Rm @ np.array([0, 0, -1], np.float32)
