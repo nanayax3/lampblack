@@ -498,9 +498,12 @@ class Hand3D:
         a = np.asarray(anchor, np.float32) * self.s; a[0] *= self.side
         C = C @ Rm.T + (np.asarray(at, np.float32) - Rm @ a)
         D = D @ Rm.T
+        dz = 0.0
         if rest:
-            C[:, 2] -= (C[:, 2] - R).min()
+            dz = (C[:, 2] - R).min()
+            C[:, 2] -= dz
         C[:, 2] -= sink
+        self._dz = float(dz + sink)
         Y_, X_ = np.mgrid[0:H, 0:W].astype(np.float32)
         hh = np.full((H, W), -1e9, np.float32)
         win = np.full((H, W), -1, np.int32)
@@ -526,7 +529,134 @@ class Hand3D:
         tw = tipw[k]
         nail = np.clip((dd - 0.55) * 5, 0, 1) * np.clip((tw - 0.30) * 5, 0, 1) * np.clip((0.97 - tw) * 12, 0, 1) * vis
         hh = lb.blur(hh[..., None], 1.4 * max(1.0, 0.8 * self.s))[..., 0] * (lb.blur(vis.astype(np.float32)[..., None], 0.8)[..., 0] > 0.02)
+        # remembered for world() and skin(): the pose, and where along the
+        # last bone each nail pixel sits (0.3 cuticle .. 0.97 free edge)
+        self._pose = dict(yaw=yaw, roll=roll, pitch=pitch, at=tuple(at), anchor=tuple(anchor), sink=sink)
+        self._tip = np.where(vis & (tw >= 0), tw, -1.0).astype(np.float32)
         return hh, partmap, nail.astype(np.float32)
+
+    def world(self, p, yaw=None, roll=None, pitch=None, at=None, anchor=None):
+        """where a local point (unscaled, right-hand frame, as in KNUCKLES)
+        lands on screen: (x, y, height). Defaults to the pose of the last
+        render(), including its rest/sink drop, so it agrees with the picture."""
+        P = getattr(self, '_pose', {})
+        yaw = P.get('yaw', 0.0) if yaw is None else yaw
+        roll = P.get('roll', 0.0) if roll is None else roll
+        pitch = P.get('pitch', 0.0) if pitch is None else pitch
+        at = P.get('at', (0, 0, 0)) if at is None else at
+        anchor = P.get('anchor', (0, 0, 0)) if anchor is None else anchor
+        Rm = _rz(yaw) @ _rx(pitch) @ _ry(roll * self.side)
+        q = np.asarray(p, np.float32) * self.s; q[0] *= self.side
+        a = np.asarray(anchor, np.float32) * self.s; a[0] *= self.side
+        w = Rm @ q + (np.asarray(at, np.float32) - Rm @ a)
+        w[2] -= getattr(self, '_dz', 0.0)
+        return w
+
+    def joints(self):
+        """the joints in the local frame, for skin() or anything else that
+        wants to put a thing where a joint really is. A list of dicts:
+        part (2..5 fingers, 6 thumb), j (0 = base knuckle), p (point),
+        r (radius there), axis (bone direction), dors (back-of-finger normal)."""
+        out, seen = [], {}
+        for p0, p1, r0, r1, pt, ds, tip in self._bones():
+            if pt < 2:
+                continue
+            j = seen.get(pt, 0); seen[pt] = j + 1
+            ax = (p1 - p0) / max(1e-6, np.linalg.norm(p1 - p0))
+            out.append(dict(part=pt, j=j, p=p0, r=r0, axis=ax, dors=ds))
+        return out
+
+    def skin(self, col, hh, part, nail, seed=0, flush=1.0, crease=1.0,
+             nail_col=(0.92, 0.70, 0.66), lunula=(0.96, 0.86, 0.82), edge=(0.95, 0.90, 0.84),
+             blush=(0.80, 0.36, 0.30), pale=(0.96, 0.88, 0.80)):
+        """the colour a shaded hand is missing (4 Nov blind read: 'flat
+        peach, no nails, creases or flush'). Call after shading the output
+        of the last render():
+          - flush: warmer, redder skin over the knuckles (base and middle
+            joints), strongest where the joint faces the viewer
+          - pale: tendons and the back of the hand a touch lighter and cooler
+          - creases: two or three short dark lines across each middle and
+            end joint on the back of the finger
+          - nails: a plate colour, a pale lunula at the cuticle, a lighter
+            free edge, and a thin dark cuticle line
+          - a little slow mottling so it isn't one flat colour
+        col is (H, W, 3) 0..1; returns a new array."""
+        from noise import fbm
+        H, W = hh.shape
+        out = col.astype(np.float32).copy()
+        vis = part >= 0
+        Y, X = np.mgrid[0:H, 0:W].astype(np.float32)
+        Rm = _rz(self._pose['yaw']) @ _rx(self._pose['pitch']) @ _ry(self._pose['roll'] * self.side)
+        sgn = np.array([self.side, 1, 1], np.float32)
+        fl = np.zeros((H, W), np.float32)
+        cr = np.zeros((H, W), np.float32)
+        for J in self.joints():
+            w = self.world(J['p'])
+            d = Rm @ (J['dors'] * sgn); d /= max(1e-6, np.linalg.norm(d))
+            face = float(np.clip(d[2], 0, 1))       # does the back of this joint face us?
+            if face < 0.05:
+                continue
+            r = J['r'] * self.s
+            near = np.clip(1 - np.abs(hh - (w[2] + r * 0.6)) / (r * 1.4), 0, 1)   # only the skin on top of the joint
+            mine = (part == J['part']) | ((J['j'] == 0) & (part == 1))
+            if J['j'] <= 1 and J['part'] != 6 or J['j'] == 0:
+                g = np.exp(-((X - w[0]) ** 2 + (Y - w[1]) ** 2) / (2 * (r * 0.75) ** 2))
+                fl += g * near * mine * face * (1.0 if J['j'] == 0 else 0.75) * (0.3 if J['part'] == 6 else 1.0)   # the thumb's base is the thenar: no knuckle flush there
+            if J['j'] >= 1:
+                a = Rm @ (J['axis'] * sgn); a2 = np.array([a[0], a[1]]); n2 = np.linalg.norm(a2)
+                if n2 < 0.2:
+                    continue
+                a2 /= n2
+                along = (X - w[0]) * a2[0] + (Y - w[1]) * a2[1]
+                across = -(X - w[0]) * a2[1] + (Y - w[1]) * a2[0]
+                k = np.zeros_like(fl)
+                rng = np.random.default_rng(seed + J['part'] * 7 + J['j'])
+                for o in (-0.30, 0.0, 0.28)[: 3 if J['j'] == 1 else 2]:
+                    off = (o + rng.uniform(-0.06, 0.06)) * r
+                    bow = 0.10 * r * (across / r) ** 2      # creases bow slightly toward the tip
+                    k = np.maximum(k, np.exp(-((along - off - bow) ** 2) / (2 * (0.06 * r + 0.5) ** 2))
+                                   * np.clip(1 - (np.abs(across) / (r * (0.55 + rng.uniform(-0.1, 0.1)))) ** 2, 0, 1))
+                cr += k * (part == J['part']) * face * near
+        fl = np.clip(fl, 0, 1) * flush
+        cr = np.clip(cr, 0, 1) * crease
+        # tendons and the plain back of the hand: a hair paler and cooler, not over the knuckle heads
+        pal = (part == 1) * (1 - fl) * 0.10
+        m = fbm(X, Y, 18.0 * self.s, seed + 3)
+        m2 = fbm(X, Y, 5.0 * self.s, seed + 11)
+        out = out * (1 - pal[..., None]) + np.array(pale, np.float32) * out.max(-1, keepdims=True) * pal[..., None]
+        out = out * (1 - 0.5 * fl[..., None]) + np.array(blush, np.float32) * out.mean(-1, keepdims=True) * 1.6 * 0.5 * fl[..., None]
+        # fingertips run warmer, and thin edges glow red where light passes
+        # through (4 Nov second read, after the first pass was too shy: 'no red
+        # at knuckles or fingertips, no light passing through the skin')
+        tw0 = getattr(self, '_tip', None)
+        if tw0 is not None and tw0.shape == hh.shape:
+            tipw = np.clip((tw0 - 0.45) / 0.4, 0, 1) * (1 - nail)
+            out = out * (1 - 0.35 * tipw[..., None]) + np.array(blush, np.float32) * out.mean(-1, keepdims=True) * 1.5 * 0.35 * tipw[..., None]
+        v = vis.astype(np.float32)
+        rim = np.clip(1 - lb.blur(v[..., None], 2.5 * self.s)[..., 0], 0, 1) * v
+        rim = np.clip(rim * 2.2, 0, 1) * 0.5
+        out = out * (1 - rim[..., None] * np.array([0.0, 0.35, 0.45]))
+        mot = (m - 0.5) * 0.10 + (m2 - 0.5) * 0.04
+        out = out * (1 + np.stack([mot * 1.0, mot * 0.6, mot * 0.3], -1) * vis[..., None])
+        out = out * (1 - 0.32 * cr[..., None]) + np.array([0.35, 0.15, 0.12]) * 0.32 * cr[..., None] * out.mean(-1, keepdims=True)
+        # nails
+        tw = getattr(self, '_tip', None)
+        if tw is not None and tw.shape == hh.shape:
+            nm = nail.astype(np.float32)
+            t = np.clip((tw - 0.30) / 0.67, 0, 1)
+            luma = out.max(-1, keepdims=True)
+            plate = np.array(nail_col, np.float32) * luma * 0.98
+            lun = np.clip(1 - t / 0.16, 0, 1) ** 1.5
+            fre = np.clip((t - 0.92) / 0.06, 0, 1) * 0.6     # a sliver, or it reads as a French manicure
+            nc = plate * (1 - lun[..., None] * 0.6) + np.array(lunula, np.float32) * luma * 1.08 * lun[..., None] * 0.6
+            nc = nc * (1 - fre[..., None]) + np.array(edge, np.float32) * luma * 1.12 * fre[..., None]
+            cut = np.exp(-((t - 0.0) ** 2) / (2 * 0.035 ** 2)) * (nm > 0.3)
+            nc = nc * (1 - 0.35 * cut[..., None])
+            # the plate catches a little more light than skin: a soft sheen across its middle
+            sheen = np.exp(-((t - 0.45) ** 2) / (2 * 0.18 ** 2)) * 0.06
+            nc = nc + sheen[..., None]
+            out = out * (1 - nm[..., None] * 0.85) + nc * nm[..., None] * 0.85
+        return np.clip(out, 0, 1)
 
     def palm_normal(self, yaw=0.0, roll=0.0, pitch=0.0):
         """world direction the palm faces after the same rotation render() uses."""
