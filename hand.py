@@ -335,8 +335,9 @@ class Hand3D:
     SEGS = [(44, 26, 20), (48, 30, 21), (46, 28, 20), (36, 22, 18)]
     RADS = [(10.5, 9.5, 8.5, 7.5), (11, 10, 9, 8), (10.5, 9.5, 8.5, 7.5), (9, 8, 7.5, 6.5)]
 
-    def __init__(self, scale=1.0, side=1, palm_half=13.0, arm=(150, 25, 21)):
+    def __init__(self, scale=1.0, side=1, palm_half=13.0, arm=(150, 25, 21), detail=1.0):
         self.s, self.side = float(scale), side
+        self.detail = float(detail)          # 0 = the old smooth tubes; 1 = waists, knuckle heads, tendons
         self.palm_half = palm_half
         self.arm = arm
         self.curls = [[8, 10, 6]] * 4
@@ -381,35 +382,102 @@ class Hand3D:
             B.append((p, q, rads[j] * (1.25 if j == 0 else 1.0), rads[j + 1], 6, dors, j == len(segs) - 1))
             p = q
         L_, r0, r1 = self.arm
-        B.append((P(0, 6, -2), P(0, L_, -6), r0, r1, 0, P(0, 0, 1), False))
+        dt = self.detail
+        if dt > 0:
+            rw = r0 * (1 - 0.30 * dt)                 # the wrist: narrower and lower than the forearm
+            mid = P(0, 6 + 0.35 * L_, -6)
+            B.append((P(0, 4, -2 - 6 * dt), mid, rw, r0 * (1 - 0.05 * dt), 0, P(0, 0, 1), False))
+            B.append((mid, P(0, L_, -6), r0 * (1 - 0.05 * dt), r1, 0, P(0, 0, 1), False))
+        else:
+            B.append((P(0, 6, -2), P(0, L_, -6), r0, r1, 0, P(0, 0, 1), False))
         return B
 
     def _spheres(self):
         C, R, part, dors, tipw = [], [], [], [], []
+        dt = self.detail
         for p0, p1, r0, r1, pt, ds, tip in self._bones():
             n = max(2, int(np.linalg.norm(p1 - p0) / (min(r0, r1) * 0.12)) + 1)
+            # a phalanx is waisted: the shaft is narrower than the joints at
+            # either end, which is what stops a finger reading as a sausage.
+            # The fingertip keeps its pad (no waist past the middle of the last bone).
+            waist = 0.0 if pt == 0 else 0.045 * dt         # 0.085 read as sausage links (blind read, 4 Nov)
             for t in np.linspace(0, 1, n):
-                C.append(p0 + (p1 - p0) * t); R.append(r0 + (r1 - r0) * t)
+                w = np.sin(np.pi * t) if not tip else np.sin(np.pi * min(t, 0.5))
+                if tip and t > 0.5:
+                    w = 1.0 - 0.6 * (t - 0.5) / 0.5      # ease back toward a rounded pad
+                C.append(p0 + (p1 - p0) * t); R.append((r0 + (r1 - r0) * t) * (1 - waist * w))
                 part.append(pt); dors.append(ds); tipw.append(t if tip else -1.0)
         # the palm: a slab swept between the wrist and the knuckles,
         # thinning toward the knuckles, a little higher across the middle
         ph = self.palm_half
         kx = [k[0] for k in self.KNUCKLES]; ky = [k[1] for k in self.KNUCKLES]
-        for v in np.linspace(0, 1, 26):              # 0 wrist -> 1 knuckles
-            xl = -24 + (kx[0] - 2 + 24) * v; xr = 22 + (kx[-1] + 2 - 22) * v
+        dens = max(1.0, self.s)                      # sample finer as the hand grows, or the spheres show as a knit
+        vs = np.linspace(0, 1, int(26 * dens))
+        if self.detail > 0:                          # carry on past the wrist line, sinking, so the hand slopes into the arm
+            vs = np.concatenate([np.linspace(-0.16, -0.01, int(7 * dens)), vs])
+        for v in vs:                                 # 0 wrist -> 1 knuckles
+            xw0, xw1 = -24 + 4 * self.detail, 22 - 4 * self.detail     # the wrist is narrower than the knuckles
+            xl = xw0 + (kx[0] - 2 - xw0) * v; xr = xw1 + (kx[-1] + 2 - xw1) * v
             yk = np.interp(np.linspace(0, 1, 2), [0, 1], [ky[0], ky[-1]])
-            for u in np.linspace(0, 1, 18):
+            for u in np.linspace(0, 1, int(18 * dens)):
                 x = xl + (xr - xl) * u
                 yt = np.interp(u, [0, 1 / 3, 2 / 3, 1], ky)
                 y = -2 + (yt + 2) * v
-                dome = 3.0 * np.sin(np.pi * u) * np.sin(np.pi * min(1, v * 1.2))
-                r = ph * (1 - 0.18 * v)
-                C.append(np.array([x, y, dome - 1.0], np.float32)); R.append(r)
+                dt_ = self.detail
+                dome = (3.0 + 2.5 * dt_) * np.sin(np.pi * u) * np.sin(np.pi * min(1, max(v, 0) * 1.2))
+                r = ph * (1 - (0.18 + 0.07 * dt_) * max(v, 0))    # thinner at the knuckle row, so the heads stand proud
+                r *= 1 - dt_ * 0.22 * (1 - np.sin(np.pi * u)) ** 2   # the transverse arch: edges fall away, no walls
+                sinkw = 0.0 if v >= 0 else (-v / 0.16) ** 1.3 * 7.0
+                C.append(np.array([x, y, dome - 1.0 - sinkw], np.float32)); R.append(r)
                 part.append(1); dors.append(np.array([0, 0, 1], np.float32)); tipw.append(-1.0)
         # the thenar: the fat of the thumb running back into the heel, palm side
+        # (detail slims it and tucks it under: from the back it was a lump)
         for t in np.linspace(0, 1, 10):
-            C.append(np.array([-26 + 2 * t, -8 - 22 * t, -9], np.float32)); R.append(15 - 2 * t)
+            C.append(np.array([-26 + 2 * t, -8 - 22 * t, -9 - 2 * dt], np.float32)); R.append((15 - 2 * t) * (1 - 0.12 * dt))
             part.append(6); dors.append(np.array([0, 0, 1], np.float32)); tipw.append(-1.0)
+        if dt > 0:
+            up = np.array([0, 0, 1], np.float32)
+            def palm_top(x, y):
+                v = np.clip(y / ky[1], 0, 1) if ky[1] else 0.0
+                xw0, xw1 = -24 + 4 * dt, 22 - 4 * dt
+                xl = xw0 + (kx[0] - 2 - xw0) * v; xr = xw1 + (kx[-1] + 2 - xw1) * v
+                u = np.clip((x - xl) / (xr - xl), 0, 1)
+                dome = (3.0 + 2.5 * dt) * np.sin(np.pi * u) * np.sin(np.pi * min(1, v * 1.2))
+                r = ph * (1 - (0.18 + 0.07 * dt) * v) * (1 - dt * 0.22 * (1 - np.sin(np.pi * u)) ** 2)
+                return dome - 1.0 + r
+            # the webs: skin between neighbouring fingers for the first third
+            # of the first bone, lower than the fingers, so they grow out of
+            # the hand instead of being plugged into it
+            fb = {}
+            for p0, p1, r0, r1, pt, ds, tip in self._bones():
+                if 2 <= pt <= 5 and pt not in fb:
+                    fb[pt] = (p0, p1, r0)
+            for a in (2, 3, 4):
+                pa, qa, ra = fb[a]; pb, qb, rb = fb[a + 1]
+                for t in np.linspace(0.0, 0.38, int(10 * dens)):
+                    ca = pa + (qa - pa) * t; cb = pb + (qb - pb) * t
+                    c = (ca + cb) / 2; r = (ra + rb) / 2 * (0.78 - 0.5 * t)
+                    c = c - up * (1.5 + 6.0 * t)
+                    C.append(c.astype(np.float32)); R.append(r); part.append(1); dors.append(up); tipw.append(-1.0)
+            for i, (kxi, kyi) in enumerate(self.KNUCKLES):
+                # the knuckle head: the end of the metacarpal. It rides higher
+                # the more the finger bends at its base (a fist is all knuckles).
+                c0 = np.radians(min(max(self.curls[i][0], 0), 90))
+                rk = self.RADS[i][0] * 1.05          # broad and low: a ridge, not a marble
+                lift = dt * (0.9 + 3.2 * np.sin(c0))
+                C.append(np.array([kxi, kyi + 3 + 4 * np.sin(c0), palm_top(kxi, kyi + 3) - rk + lift], np.float32))
+                R.append(rk); part.append(1); dors.append(up); tipw.append(-1.0)
+                # the extensor tendon: a low ridge fanning from the wrist to
+                # this knuckle, fading into the wrist where it goes under the band
+                # index and middle show most; ring and little barely.
+                wx, wy = kxi * 0.55, -10.0
+                rt = 6.0                               # broad and shallow: a swelling under skin, not a cord
+                hmax = dt * (1.2, 1.05, 0.6, 0.45)[i]
+                for t in np.linspace(0.08, 0.90, int(22 * dens)):
+                    x = wx + (kxi - wx) * t; y = wy + (kyi + 4 - wy) * t
+                    h = hmax * np.sin(np.pi * min(1, (t - 0.08) / 0.82 * 0.95 + 0.05)) ** 0.8
+                    C.append(np.array([x, y, palm_top(x, y) - rt + h], np.float32)); R.append(rt)
+                    part.append(1); dors.append(up); tipw.append(-1.0)
         C = np.array(C, np.float32); C[:, 0] *= self.side
         D = np.array(dors, np.float32); D[:, 0] *= self.side
         return C * self.s, np.array(R, np.float32) * self.s, np.array(part), D, np.array(tipw, np.float32)
@@ -457,7 +525,7 @@ class Hand3D:
         dd = nx * D[k, 0] + ny * D[k, 1] + nz * D[k, 2]
         tw = tipw[k]
         nail = np.clip((dd - 0.55) * 5, 0, 1) * np.clip((tw - 0.30) * 5, 0, 1) * np.clip((0.97 - tw) * 12, 0, 1) * vis
-        hh = lb.blur(hh[..., None], 1.4)[..., 0] * (lb.blur(vis.astype(np.float32)[..., None], 0.8)[..., 0] > 0.02)
+        hh = lb.blur(hh[..., None], 1.4 * max(1.0, 0.8 * self.s))[..., 0] * (lb.blur(vis.astype(np.float32)[..., None], 0.8)[..., 0] > 0.02)
         return hh, partmap, nail.astype(np.float32)
 
     def palm_normal(self, yaw=0.0, roll=0.0, pitch=0.0):
