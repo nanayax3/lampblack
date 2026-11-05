@@ -883,3 +883,80 @@ def motion(rgb, alpha, vx, vy, samples=None, curve=0.0):
 def over(dst, rgb_p, a):
     """Composite a premultiplied layer (from motion()) over an image."""
     return np.asarray(dst, np.float32) * (1.0 - a[..., None]) + rgb_p
+
+
+def refract(img, thickness, strength=18.0, dispersion=0.0, tint=(1.0, 1.0, 1.0),
+            absorb=0.0, env=(0.75, 0.82, 0.90), f0=0.04, fresnel=1.0,
+            light=(-0.45, -0.7, 0.55), shine=60.0, spec=0.0, frost=0.0,
+            edge=0.02, slope=None):
+    """
+    GLASS: SEE THROUGH A THING THAT BENDS WHAT'S BEHIND IT. Written 5 Nov 2026
+    for an eel larva, which is a leaf of clear jelly you only find by the way
+    it bends the water behind it and the line of light along its edge.
+
+    Something transparent is invisible on the inside and only shows itself
+    three ways, and this does those three and nothing else:
+      1. it MOVES the background: the thicker it gets, the more the rays bend,
+         so the picture behind it is read from somewhere else (a lens);
+      2. it COLOURS what comes through by how much of it the light crossed
+         (Beer's law: a thin edge is clear, a thick middle is tinted);
+      3. at grazing angles it turns into a MIRROR (Fresnel), which is why a
+         glass or a jellyfish is drawn by its rim and not by its body.
+    Paint the background first, flatten it, then pass the glass over it.
+
+    img        : (H, W, 3), what is behind the glass.
+    thickness  : (H, W), >= 0. Any units; its slope is what bends. 0 = no glass.
+                 Smooth it (blur a few px) or the edge refraction tears.
+    strength   : px of shift per unit of slope. + magnifies under a dome
+                 (the usual lens), - shrinks.
+    dispersion : 0..~0.3. Red bends a little less than blue, so edges get a
+                 coloured fringe. A touch goes a long way; it reads as "lens"
+                 the moment it shows.
+    tint/absorb: colour the light keeps per unit of thickness, and how much.
+                 absorb=0 is perfectly clear.
+    env, f0, fresnel : what the surface reflects (a colour or an (H, W, 3)
+                 image), its reflectance head-on (water and glass ~0.02-0.04),
+                 and a multiplier so a rim can be pushed past physics on purpose.
+    light, shine, spec : one glint, Blinn-Phong. spec=0 turns it off.
+    frost      : blur radius of what is seen through (wet, cloudy jelly).
+    edge       : thickness at which the thing counts as fully there; below it
+                 the glass fades out, which keeps the silhouette from aliasing.
+    slope      : how steep 1 unit of thickness per px is for the NORMALS
+                 (rim width). Default picks it so the steepest slope ~ 60°.
+    """
+    img = np.asarray(img, np.float32)
+    T = np.clip(np.asarray(thickness, np.float32), 0, None)
+    h, w = T.shape
+    gy, gx = np.gradient(T)
+    if slope is None:
+        m = float(np.percentile(np.hypot(gx, gy)[T > edge], 99)) if (T > edge).any() else 1.0
+        slope = 1.7 / max(m, 1e-6)
+    nx, ny = -gx * slope, -gy * slope
+    nz = np.ones_like(T)
+    inv = 1.0 / np.sqrt(nx * nx + ny * ny + nz * nz)
+    nx, ny, nz = nx * inv, ny * inv, nz * inv
+
+    behind = blur(img, frost) if frost > 0 else img
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    seen = np.empty_like(img)
+    for ch in range(3):
+        k = strength * (1.0 + dispersion * (ch - 1))
+        seen[..., ch] = _sample_at(behind[..., ch], xx + k * gx * slope, yy + k * gy * slope)
+
+    if absorb > 0:
+        seen = seen * np.power(np.asarray(tint, np.float32), (T * absorb)[..., None])
+
+    F = np.clip((f0 + (1.0 - f0) * (1.0 - nz) ** 5) * fresnel, 0, 1)[..., None]
+    env = np.asarray(env, np.float32)
+    out = seen * (1.0 - F) + env * F
+
+    if spec > 0:
+        L = np.asarray(light, np.float32)
+        L = L / np.linalg.norm(L)
+        hx, hy, hz = L[0], L[1], L[2] + 1.0
+        hn = np.sqrt(hx * hx + hy * hy + hz * hz)
+        nh = np.clip((nx * hx + ny * hy + nz * hz) / hn, 0, 1)
+        out = out + spec * (nh ** shine)[..., None]
+
+    a = np.clip(T / max(edge, 1e-6), 0, 1)[..., None]
+    return img * (1.0 - a) + out * a
