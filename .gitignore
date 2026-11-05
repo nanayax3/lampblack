@@ -9,3 +9,6 @@ paintings/*
 !paintings/pine_in_its_own_soot.py
 !paintings/bamboo_bends.py
 !paintings/plum_in_snow.py
+
+# Reference photos are other people's pictures (stock, scans): never public.
+refs/
