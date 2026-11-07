@@ -960,3 +960,44 @@ def refract(img, thickness, strength=18.0, dispersion=0.0, tint=(1.0, 1.0, 1.0),
 
     a = np.clip(T / max(edge, 1e-6), 0, 1)[..., None]
     return img * (1.0 - a) + out * a
+
+
+def reflect(img, mask, y0, strength=0.2, soften=8.0, fade=200.0, below=None, tint=(1.0, 1.0, 1.0)):
+    """
+    A FLAT MIRROR UNDER A THING: a table with oil on it, a wet floor, still water.
+    Written 7 Nov 2026 for a glass of water, the missing half of refract().
+
+    Everything above the line y0 that `mask` says is the object gets folded down
+    below the line, row y reading row 2*y0 - y. Real reflections in a surface
+    that isn't a perfect mirror go softer and fainter the further they are from
+    the contact line, so both blur and strength fall off with distance.
+
+    img      : (H, W, 3), the finished picture with the object in it.
+    mask     : (H, W) 0..1, which pixels are the object (only these reflect).
+    y0       : the row where the object touches the surface.
+    strength : how much of the reflection shows right at the contact line.
+               An oiled table ~0.1-0.2, a wet floor ~0.3, still water ~0.6.
+    soften   : blur radius (px) reached at `fade` px below the line.
+    fade     : distance (px) over which the reflection dies away.
+    below    : what to reflect onto (default img itself).
+    tint     : colour the surface lends the reflection (oak darkens and warms it).
+    """
+    img = np.asarray(img, np.float32)
+    base = img if below is None else np.asarray(below, np.float32)
+    h, w = img.shape[:2]
+    y0 = int(y0)
+    ys = np.arange(h)
+    src = np.clip(2 * y0 - ys, 0, h - 1)
+    sharp = img[src]
+    soft = blur(img, soften)[src] if soften >= 1 else sharp
+    m = np.asarray(mask, np.float32)[src]
+    d = np.clip((ys - y0) / max(fade, 1.0), 0, 1)[:, None]
+    mix = d[..., None]
+    refl = sharp * (1 - mix) + soft * mix
+    k = (strength * (1 - d) ** 1.5 * (ys > y0)[:, None])
+    if soften >= 2:
+        m = blur(m, soften * 0.5)
+    k = (k * m)[..., None]
+    out = base * (1 - k) + refl * np.asarray(tint, np.float32) * k
+    return out
+
