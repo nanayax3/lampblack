@@ -299,6 +299,12 @@ Helpers: `linear_depth(shape)` and `radial_depth(shape, cx, cy)` if you want atm
 
 **Value noise shows its lattice.** Stack octaves on the same square grid and every crease lines up, so the picture grows horizontals and verticals nobody asked for; in `ridged` it looked like a street map. `fbm` turns each octave by the golden angle, which never comes back round, and the grid disappears. `rotate=False` gives the old unrotated version if you need to match something made before.
 
+
+### `wood.py` — boards
+
+`wood.board(X, Z, species, planks=, knots=, cut=, taper=)` returns an albedo and a height for wood whose grain runs along `Z`; light it with `relight`. Presets: `oak` (silver rays), `pine`, `walnut`, `weathered` (grey, eroded, with drying checks). Two paintings had grown their own wood before it existed.
+
+Two things in it are geometry rather than texture. **Knots are obstacles in a flow:** the branch was there first and the trunk grew round it, so the grain coordinate is the stream function past a cylinder, `x(1 - R²/d²)`, and the rings part and close round the knot by themselves. **`cut="flat"` gives cathedrals:** a flat-sawn face is a plane through a tapering stack of cones, so a ring sits where `sqrt(x² + depth²)` is constant and the depth grows along the board. Keep `taper` low (1–3) or the arches come out as a garland.
 ---
 
 ## 4. Watercolour
